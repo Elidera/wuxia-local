@@ -88,6 +88,11 @@ mod app {
     }
 
     pub fn run() -> anyhow::Result<()> {
+        // Only one copy: a second launch just brings up the panel of the first one.
+        if !win::claim_single_instance() {
+            win::signal_show_panel();
+            return Ok(());
+        }
         win::set_dpi_aware();
         let paths = Paths::detect()?;
         let _log_guard = init_logging(&paths);
@@ -145,9 +150,13 @@ mod app {
         }
         rt.spawn(dispatcher(shared.clone(), translator.clone(), ocr.clone(), cmd_rx, srv_tx));
 
-        // First run: open the panel so the user sees what is happening.
-        if !paths.cache().exists() {
-            shared.ui(|u| u.panel_open = true);
+        // The panel is the only visible sign that the program runs: always show it at start.
+        shared.ui(|u| u.panel_open = true);
+        {
+            let tx = cmd_tx.clone();
+            win::listen_show_panel(move || {
+                let _ = tx.send(Command::ShowPanel);
+            });
         }
 
         let options = eframe::NativeOptions {
@@ -214,6 +223,7 @@ mod app {
                     tracing::info!("новая область субтитров: {r:?}");
                 }
                 Command::TogglePanel => shared.ui(|u| u.panel_open = !u.panel_open),
+                Command::ShowPanel => shared.ui(|u| u.panel_open = true),
                 Command::SwitchModel(id) => {
                     shared.cfg.write().unwrap().llm.active_model = id;
                     shared.save_config();

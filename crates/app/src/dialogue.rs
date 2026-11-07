@@ -49,9 +49,14 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         if !on || selecting {
             continue;
         }
-        if cfg.general.pause_when_unfocused && !cfg.general.window_match.is_empty() {
-            let fg = win::foreground_title();
-            let focused = fg.to_lowercase().contains(&cfg.general.window_match.to_lowercase());
+        if cfg.general.pause_when_unfocused && !(cfg.general.window_match.is_empty() && cfg.general.process_match.is_empty()) {
+            let exe = win::foreground_process_name();
+            let focused = if !cfg.general.process_match.is_empty() {
+                exe == cfg.general.process_match.to_lowercase()
+            } else {
+                !win::NOT_GAME.contains(&exe.as_str())
+                    && win::foreground_title().to_lowercase().contains(&cfg.general.window_match.to_lowercase())
+            };
             let was = shared.ui.lock().unwrap().paused_unfocused;
             if focused == was {
                 shared.ui(|u| u.paused_unfocused = !focused);
@@ -99,7 +104,8 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 let ocr_ms = t0.elapsed().as_millis();
                 let txt = ocr::subtitle_text(lines);
                 shared.ui(|u| u.stats.add_ocr(ocr_ms));
-                if text::han_count(&txt) == 0 {
+                // Chinese OCR turns other scripts into Latin garbage: require real Chinese text.
+                if text::han_count(&txt) < 2 || text::han_ratio(&txt) < 0.4 {
                     continue;
                 }
                 let growing = similarity::is_growing(&last_text, &txt);

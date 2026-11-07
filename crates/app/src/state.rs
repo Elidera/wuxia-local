@@ -39,6 +39,7 @@ pub enum Command {
     RegionSelected([f32; 4]),
     CancelRegion,
     TogglePanel,
+    ShowPanel,
     SwitchModel(String),
     RestartServer,
     SaveCorrection { src: String, dst: String },

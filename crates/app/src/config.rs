@@ -24,6 +24,8 @@ pub struct General {
     /// Substring of the game window title. Capture pauses while another window
     /// is in the foreground. Empty = always active.
     pub window_match: String,
+    /// Optional exe name of the game (e.g. "wwm.exe"). If set, it is used instead of the title.
+    pub process_match: String,
     pub pause_when_unfocused: bool,
     /// Show the overlay and the panel on screenshots (Win+Shift+S, OBS).
     /// Off by default: then they can never get into our own OCR.
@@ -173,7 +175,7 @@ impl Default for Config {
 
 impl Default for General {
     fn default() -> Self {
-        Self { game_title: "Where Winds Meet (燕云十六声)".into(), window_match: "Where Winds Meet".into(), pause_when_unfocused: true, visible_in_screenshots: false }
+        Self { game_title: "Where Winds Meet (燕云十六声)".into(), window_match: "Where Winds Meet".into(), process_match: String::new(), pause_when_unfocused: true, visible_in_screenshots: false }
     }
 }
 

@@ -26,6 +26,7 @@ pub struct WuxiaApp {
     applied_visibility: (Option<bool>, Option<bool>),
     /// Frames rendered while hidden; the overlay is shown only once it is transparent.
     frames: u32,
+    exclude_attempts: u32,
     passthrough: bool,
     drag_start: Option<Pos2>,
     edits: HashMap<String, String>,
@@ -76,6 +77,7 @@ impl WuxiaApp {
             panel_hwnd: None,
             applied_visibility: (None, None),
             frames: 0,
+            exclude_attempts: 0,
             passthrough: true,
             drag_start: None,
             edits: HashMap::new(),
@@ -132,11 +134,25 @@ impl eframe::App for WuxiaApp {
         let cfg = self.shared.cfg();
         let want_visible = cfg.general.visible_in_screenshots;
         if let Some(h) = self.overlay_hwnd {
-            if self.applied_visibility.0 != Some(want_visible) {
-                if !win::set_capture_visible(h, want_visible) && !want_visible {
-                    self.shared.ui(|u| u.notice("Не удалось исключить оверлей из захвата (нужна Windows 10 2004+)"));
+            // Wait until the window is full-size; retry a few times (the call can fail
+            // while the window is still being set up).
+            if self.sized && self.applied_visibility.0 != Some(want_visible) {
+                match win::set_capture_visible(h, want_visible) {
+                    Ok(()) => {
+                        tracing::info!("оверлей: видимость на скриншотах = {want_visible}");
+                        self.applied_visibility.0 = Some(want_visible);
+                        self.exclude_attempts = 0;
+                    }
+                    Err(e) => {
+                        self.exclude_attempts += 1;
+                        if self.exclude_attempts >= 20 {
+                            self.shared.ui(|u| u.notice(format!("Не удалось изменить видимость оверлея для захвата: {e}")));
+                            self.applied_visibility.0 = Some(want_visible);
+                        } else {
+                            ctx.request_repaint_after(Duration::from_millis(250));
+                        }
+                    }
                 }
-                self.applied_visibility.0 = Some(want_visible);
             }
         }
         let (dialogue, interface, show_original, selecting, panel_open, server, paused, dialogue_on) = {
@@ -379,7 +395,9 @@ impl WuxiaApp {
         if let Some(h) = self.panel_hwnd {
             let want = self.shared.cfg().general.visible_in_screenshots;
             if self.applied_visibility.1 != Some(want) {
-                win::set_capture_visible(h, want);
+                if let Err(e) = win::set_capture_visible(h, want) {
+                    tracing::warn!("панель: видимость на скриншотах: {e}");
+                }
                 self.applied_visibility.1 = Some(want);
             }
         }
