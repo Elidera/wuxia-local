@@ -58,7 +58,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models
-          key: models-${{ env.MODELS }}-v1
+          key: models-v1-${{ github.run_id }}
+          restore-keys: models-v1-
 
       - name: Run translation tests
         run: |
