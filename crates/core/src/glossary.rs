@@ -122,7 +122,7 @@ impl Glossary {
                 if word.is_empty() {
                     return false;
                 }
-                let keep = if word.len() <= 4 { word.len() } else { (word.len() - 2).max(4) };
+                let keep = if word.len() <= 4 { word.len() } else { (word.len() * 55 / 100).max(4) };
                 let stem: String = word[..keep].iter().collect();
                 !lower.contains(&stem)
             })
