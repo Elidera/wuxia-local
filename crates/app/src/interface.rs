@@ -127,12 +127,14 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     shared.ui(|u| u.interface = Some(InterfaceView { items, pending: n_pending, generation: gen }));
 
     // Auto-hide watcher: the game screen changed (menu closed / scrolled).
-    // Our own translation labels are blanked in both pictures, so only a real
-    // change of the game screen counts; two changed checks in a row are needed
-    // (menus often have softly animated backgrounds).
+    // Everything of ours that was ever on screen (translation labels, the panel
+    // while it was closing) is blanked in both pictures, so only a real change
+    // of the game screen counts. Menus have animated backgrounds (characters,
+    // particles), so the change must be large and last ~1.5 s.
     if cfg.interface.auto_hide {
         let sh = shared.clone();
         let mut base = frame.clone();
+        let mut masks: Vec<[i32; 4]> = capture::own_rects(&shared);
         tokio::spawn(async move {
             let mut changed = 0;
             loop {
@@ -140,11 +142,17 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 if sh.interface_gen.load(Ordering::SeqCst) != gen {
                     return;
                 }
-                let Ok(f) = capture::capture_clean(&sh, full) else { continue };
-                capture::mask_overlay(&sh, &mut base, full);
+                let Ok(mut f) = capture::capture(full) else { continue };
+                for m in capture::own_rects(&sh) {
+                    if !masks.contains(&m) {
+                        masks.push(m);
+                    }
+                }
+                capture::apply_masks(&mut f, full, &masks);
+                capture::apply_masks(&mut base, full, &masks);
                 let d = coarse_diff(&coarse(&base), &coarse(&f));
-                changed = if d > 0.06 { changed + 1 } else { 0 };
-                if changed >= 2 {
+                changed = if d > 0.12 { changed + 1 } else { 0 };
+                if changed >= 3 {
                     tracing::info!(target: "interface", "экран изменился ({d:.3}) — прячу перевод");
                     if sh.interface_gen.load(Ordering::SeqCst) == gen {
                         sh.interface_gen.fetch_add(1, Ordering::SeqCst);

@@ -2,7 +2,7 @@
 //! Window handles are passed around as `isize` because `HWND` is `!Send`.
 
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, RECT};
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE,
 };
@@ -12,7 +12,7 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
+    FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
     SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow, SW_RESTORE,
     SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
@@ -49,6 +49,20 @@ pub fn find_window(title: &str) -> Option<isize> {
             Ok(h) if !h.0.is_null() => Some(h.0 as isize),
             _ => None,
         }
+    }
+}
+
+/// Screen rectangle (x, y, w, h in physical px) of our own visible window with
+/// this title, e.g. the panel — so captures can blank it out.
+pub fn visible_window_rect(title: &str) -> Option<[i32; 4]> {
+    let h = HWND(find_window(title)? as *mut _);
+    unsafe {
+        if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+            return None;
+        }
+        let mut r = RECT::default();
+        GetWindowRect(h, &mut r).ok()?;
+        Some([r.left, r.top, r.right - r.left, r.bottom - r.top])
     }
 }
 

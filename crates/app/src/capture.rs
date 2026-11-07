@@ -45,7 +45,20 @@ pub fn capture_clean(shared: &crate::state::Shared, r: PxRect) -> anyhow::Result
 
 /// Blank the current overlay rectangles in a frame captured at `r`.
 pub fn mask_overlay(shared: &crate::state::Shared, f: &mut Frame, r: PxRect) {
-    let rects = shared.overlay_px.lock().unwrap().clone();
+    apply_masks(f, r, &own_rects(shared));
+}
+
+/// Everything of ours on screen right now: overlay drawings and the panel window
+/// (an ordinary window: if it is on screen, it is not the game).
+pub fn own_rects(shared: &crate::state::Shared) -> Vec<[i32; 4]> {
+    let mut rects = shared.overlay_px.lock().unwrap().clone();
+    if let Some(p) = crate::win::visible_window_rect(crate::ui::PANEL_TITLE) {
+        rects.push(p);
+    }
+    rects
+}
+
+pub fn apply_masks(f: &mut Frame, r: PxRect, rects: &[[i32; 4]]) {
     for [x, y, w, h] in rects {
         f.mask(x - r.x - 4, y - r.y - 4, w + 8, h + 8);
     }
