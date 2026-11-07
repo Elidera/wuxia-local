@@ -11,7 +11,6 @@ use eframe::egui::{
     self, text::LayoutJob, Color32, FontData, FontDefinitions, FontFamily, FontId, Id, LayerId, Order, Pos2, Rect,
     Rounding, Stroke, TextFormat, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,9 +28,8 @@ pub struct WuxiaApp {
     exclude_attempts: u32,
     region_tex: Option<egui::TextureHandle>,
     ocr_tex: Option<(u64, egui::TextureHandle)>,
-    test_input: String,
     drag_start: Option<Pos2>,
-    edits: HashMap<String, String>,
+    panel_state: crate::ui_panel::PanelState,
     cfg_dirty_since: Option<Instant>,
     sized: bool,
 }
@@ -72,6 +70,7 @@ pub fn install_fonts(ctx: &egui::Context) {
 impl WuxiaApp {
     pub fn new(cc: &eframe::CreationContext<'_>, shared: Arc<Shared>) -> Self {
         install_fonts(&cc.egui_ctx);
+        crate::ui_panel::apply_theme(&cc.egui_ctx);
         let _ = shared.egui.set(cc.egui_ctx.clone());
         Self {
             shared,
@@ -82,9 +81,8 @@ impl WuxiaApp {
             exclude_attempts: 0,
             region_tex: None,
             ocr_tex: None,
-            test_input: String::new(),
             drag_start: None,
-            edits: HashMap::new(),
+            panel_state: crate::ui_panel::PanelState::default(),
             cfg_dirty_since: None,
             sized: false,
         }
@@ -427,7 +425,7 @@ impl WuxiaApp {
             }
         }
         let ocr_view = match (&dbg, &self.ocr_tex) {
-            (Some(d), Some((_, tex))) => Some(OcrView {
+            (Some(d), Some((_, tex))) => Some(crate::ui_panel::OcrView {
                 tex: tex.id(),
                 size: Vec2::new(d.frame.width as f32, d.frame.height as f32),
                 text: d.text.clone(),
@@ -435,23 +433,18 @@ impl WuxiaApp {
             }),
             _ => None,
         };
-        let test_input = &mut self.test_input;
-        let edits = &mut self.edits;
+        let st = &mut self.panel_state;
         let mut dirty = false;
         let mut protect_now = false;
         ctx.show_viewport_immediate(
             ViewportId::from_hash_of("wuxia_panel"),
-            ViewportBuilder::default().with_title(PANEL_TITLE).with_inner_size([560.0, 720.0]).with_min_inner_size([420.0, 400.0]),
+            ViewportBuilder::default().with_title(PANEL_TITLE).with_inner_size([880.0, 720.0]).with_min_inner_size([720.0, 480.0]),
             |ctx, _class| {
                 protect_now = true;
                 if ctx.input(|i| i.viewport().close_requested()) {
                     shared.ui(|u| u.panel_open = false);
                 }
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        dirty |= panel_contents(ui, &shared, edits, test_input, ocr_view.as_ref());
-                    });
-                });
+                dirty |= crate::ui_panel::panel_ui(ctx, &shared, st, ocr_view.as_ref());
             },
         );
         if protect_now && self.panel_hwnd.is_none() {
@@ -474,217 +467,4 @@ impl WuxiaApp {
             self.cfg_dirty_since = Some(Instant::now());
         }
     }
-}
-
-struct OcrView {
-    tex: egui::TextureId,
-    size: Vec2,
-    text: String,
-    ms: u128,
-}
-
-/// Returns true if the config was edited.
-fn panel_contents(
-    ui: &mut egui::Ui,
-    shared: &Arc<Shared>,
-    edits: &mut HashMap<String, String>,
-    test_input: &mut String,
-    ocr_view: Option<&OcrView>,
-) -> bool {
-    let mut dirty = false;
-    let test_result = shared.ui.lock().unwrap().test_result.clone();
-    let (server, stats, notices, recent, dialogue_on, show_original, bench, paused) = {
-        let u = shared.ui.lock().unwrap();
-        (
-            u.server.clone(),
-            u.stats.clone(),
-            u.notices.iter().cloned().collect::<Vec<_>>(),
-            u.recent.iter().cloned().collect::<Vec<_>>(),
-            u.dialogue_on,
-            u.show_original,
-            u.bench_progress.clone(),
-            u.paused_unfocused,
-        )
-    };
-    let hk = shared.cfg().hotkeys;
-
-    ui.heading("Wuxia Local");
-    ui.label(format!("Модель: {}", server.as_ref().map(|s| s.label()).unwrap_or_else(|| "—".into())));
-    ui.label(format!(
-        "OCR ≈ {:.0} мс · перевод ≈ {:.0} мс · переведено {} · из кэша {}",
-        stats.ocr_ms_avg, stats.llm_ms_avg, stats.translated, stats.cache_hits
-    ));
-    if paused && dialogue_on {
-        ui.colored_label(Color32::from_rgb(230, 190, 90), "Пауза: окно игры не активно");
-    }
-    for n in notices.iter().rev().take(4) {
-        ui.colored_label(Color32::from_rgb(235, 120, 100), n);
-    }
-    ui.separator();
-
-    ui.horizontal_wrapped(|ui| {
-        let lbl = if dialogue_on { format!("⏸ Диалоги [{}]", hk.toggle_dialogue) } else { format!("▶ Диалоги [{}]", hk.toggle_dialogue) };
-        if ui.button(lbl).clicked() {
-            shared.send(Command::ToggleDialogue);
-        }
-        if ui.button(format!("Перевести экран [{}]", hk.screen_translate)).clicked() {
-            shared.send(Command::TogglePanel);
-            shared.send(Command::ScreenTranslate);
-        }
-        let o = if show_original { "Показать перевод" } else { "Показать оригинал" };
-        if ui.button(format!("{o} [{}]", hk.show_original)).clicked() {
-            shared.send(Command::ToggleOriginal);
-        }
-        if ui.button(format!("Область субтитров [{}]", hk.select_region)).clicked() {
-            shared.send(Command::SelectRegion);
-        }
-    });
-
-    ui.separator();
-    ui.strong("Модель перевода");
-    {
-        let cfg = shared.cfg();
-        let mut active = cfg.llm.active_model.clone();
-        let current_name = cfg.active_model().name.clone();
-        egui::ComboBox::from_label("").selected_text(current_name).width(400.0).show_ui(ui, |ui| {
-            for m in &cfg.models {
-                let downloaded = !m.path.is_empty() && std::path::Path::new(&m.path).exists();
-                let label = format!("{}{}", m.name, if downloaded { "" } else { "  (скачается при выборе)" });
-                ui.selectable_value(&mut active, m.id.clone(), label);
-            }
-        });
-        if active != cfg.llm.active_model {
-            shared.send(Command::SwitchModel(active));
-        }
-        ui.horizontal(|ui| {
-            if ui.button("Перезапустить модель").clicked() {
-                shared.send(Command::RestartServer);
-            }
-            let busy = bench.is_some();
-            if ui.add_enabled(!busy, egui::Button::new("Сравнить модели (бенчмарк)")).clicked() {
-                shared.send(Command::RunBench);
-            }
-        });
-        if let Some(b) = bench {
-            ui.label(b);
-        }
-    }
-
-    ui.separator();
-    ui.strong("Диалоги");
-    {
-        let mut c = shared.cfg.write().unwrap();
-        let d = &mut c.dialogue;
-        dirty |= ui.add(egui::Slider::new(&mut d.font_size, 14.0..=56.0).text("размер шрифта")).changed();
-        dirty |= ui.add(egui::Slider::new(&mut d.backdrop_opacity, 0.0..=1.0).text("подложка")).changed();
-        ui.horizontal(|ui| {
-            ui.label("Положение:");
-            for (v, l) in [("below", "под субтитрами"), ("above", "над"), ("over", "поверх")] {
-                dirty |= ui.radio_value(&mut d.position, v.to_string(), l).changed();
-            }
-        });
-        dirty |= ui.add(egui::Slider::new(&mut d.context_lines, 0..=6).text("реплик контекста")).changed();
-        dirty |= ui.checkbox(&mut d.split_speaker, "Отделять имя говорящего («Имя：реплика»)").changed();
-        ui.horizontal(|ui| {
-            ui.label("Цвет субтитров:");
-            dirty |= ui.radio_value(&mut d.text_color, "light".to_string(), "светлый").changed();
-            dirty |= ui.radio_value(&mut d.text_color, "dark".to_string(), "тёмный").changed();
-        });
-        let mut contrast = d.preprocess == "contrast";
-        if ui.checkbox(&mut contrast, "Повышать контраст перед OCR (если плохо распознаётся)").changed() {
-            d.preprocess = if contrast { "contrast".into() } else { "none".into() };
-            dirty = true;
-        }
-        dirty |= ui.add(egui::Slider::new(&mut d.ink_threshold, 120..=250).text("порог яркости текста")).changed();
-        ui.label("Пожелание к стилю (для Qwen и других instruct-моделей):");
-        dirty |= ui.text_edit_singleline(&mut d.style_hint).changed();
-    }
-
-    ui.separator();
-    ui.strong("Интерфейс (перевод экрана)");
-    {
-        let mut c = shared.cfg.write().unwrap();
-        let i = &mut c.interface;
-        ui.horizontal(|ui| {
-            for (v, l) in [("replace", "замена"), ("backdrop", "подложка"), ("list", "списком")] {
-                dirty |= ui.radio_value(&mut i.mode, v.to_string(), l).changed();
-            }
-        });
-        dirty |= ui.add(egui::Slider::new(&mut i.font_scale, 0.5..=1.2).text("масштаб шрифта")).changed();
-        dirty |= ui.checkbox(&mut i.auto_hide, "Скрывать, когда экран игры изменился").changed();
-    }
-
-    ui.separator();
-    {
-        let mut c = shared.cfg.write().unwrap();
-        dirty |= ui
-            .checkbox(&mut c.general.visible_in_screenshots, "Показывать перевод и панель на скриншотах (Win+Shift+S, OBS)")
-            .on_hover_text("Выключено по умолчанию, чтобы программа не распознавала собственный перевод. Включайте, чтобы сделать скриншот.")
-            .changed();
-    }
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Открыть глоссарий").clicked() {
-            shared.send(Command::Open(shared.paths.user_glossary()));
-        }
-        if ui.button("Исправления OCR и замены").clicked() {
-            shared.send(Command::Open(shared.paths.fixes()));
-        }
-        if ui.button("Перечитать словари").clicked() {
-            shared.send(Command::ReloadGlossary);
-        }
-        if ui.button("Мои исправления перевода").clicked() {
-            shared.send(Command::Open(shared.paths.corrections()));
-        }
-        if ui.button("Настройки (config.toml)").clicked() {
-            shared.send(Command::Open(shared.paths.config()));
-        }
-        if ui.button("Папка логов").clicked() {
-            shared.send(Command::Open(shared.paths.logs()));
-        }
-    });
-
-    ui.separator();
-    ui.strong("Проверить перевод");
-    ui.horizontal(|ui| {
-        let resp = ui.add(egui::TextEdit::singleline(test_input).hint_text("вставьте китайский текст").desired_width(360.0));
-        let go = ui.button("Перевести").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-        if go && !test_input.trim().is_empty() {
-            shared.send(Command::TestTranslate(test_input.trim().to_string()));
-        }
-    });
-    if let Some(r) = &test_result {
-        ui.label(egui::RichText::new(r).size(16.0));
-    }
-
-    ui.separator();
-    egui::CollapsingHeader::new("Что видит распознавание (последняя реплика)").default_open(false).show(ui, |ui| match ocr_view {
-        Some(v) => {
-            let w = ui.available_width().min(v.size.x);
-            let h = v.size.y * w / v.size.x.max(1.0);
-            ui.image(egui::load::SizedTexture::new(v.tex, Vec2::new(w, h)));
-            ui.label(format!("Распознано за {} мс:", v.ms));
-            ui.label(egui::RichText::new(if v.text.is_empty() { "(пусто)" } else { v.text.as_str() }).monospace());
-            ui.small("Если здесь мусор: подвиньте «порог яркости текста» или включите «Повышать контраст». Частые ошибки исправляются в «Исправления OCR и замены».");
-        }
-        None => {
-            ui.label("Пока ничего. Включите диалоги (F7) и дождитесь субтитров, держа эту панель открытой.");
-        }
-    });
-
-    ui.separator();
-    ui.strong("Последние реплики — исправьте перевод, и он будет использоваться всегда");
-    for r in recent.iter().take(25) {
-        ui.group(|ui| {
-            ui.label(egui::RichText::new(&r.src).color(Color32::from_gray(170)));
-            let e = edits.entry(r.src.clone()).or_insert_with(|| r.dst.clone());
-            ui.add(egui::TextEdit::multiline(e).desired_rows(1).desired_width(f32::INFINITY));
-            ui.horizontal(|ui| {
-                ui.small(format!("{} · {} мс{}", r.model, r.ms, if r.cached { " · кэш" } else { "" }));
-                if *e != r.dst && ui.button("Сохранить исправление").clicked() {
-                    shared.send(Command::SaveCorrection { src: r.src.clone(), dst: e.clone() });
-                }
-            });
-        });
-    }
-    dirty
 }

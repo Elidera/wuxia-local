@@ -143,6 +143,10 @@ pub struct UiState {
     pub server: Option<ServerStatus>,
     pub bench_progress: Option<String>,
     pub ocr_debug: Option<OcrDebug>,
+    /// Windows OCR availability (None = not checked yet).
+    pub ocr_status: Option<Result<(), String>>,
+    /// (glossary terms, fix rules)
+    pub dict_counts: (usize, usize),
     /// Result of the panel's "check translation" field.
     pub test_result: Option<String>,
     pub paused_unfocused: bool,

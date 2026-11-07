@@ -146,6 +146,10 @@ impl Translator {
         n
     }
 
+    pub fn dict_counts(&self) -> (usize, usize) {
+        (self.glossary.lock().unwrap().len(), self.fixes.lock().unwrap().len())
+    }
+
     /// Fix typical OCR errors before translation (fixes.tsv, stage `ocr`).
     pub fn fix_ocr(&self, s: &str) -> String {
         self.fixes.lock().unwrap().apply_ocr(s)

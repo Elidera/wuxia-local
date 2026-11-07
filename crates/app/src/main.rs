@@ -31,6 +31,8 @@ mod translate;
 #[cfg(windows)]
 mod ui;
 #[cfg(windows)]
+mod ui_panel;
+#[cfg(windows)]
 mod win;
 
 #[cfg(windows)]
@@ -126,11 +128,12 @@ mod app {
         let ocr = match Ocr::spawn(&cfg.ocr.language) {
             Ok(o) => {
                 tracing::info!("Windows OCR готов ({}), макс. размер {} px", cfg.ocr.language, o.max_dim);
+                shared.ui(|u| u.ocr_status = Some(Ok(())));
                 Some(o)
             }
             Err(e) => {
                 shared.ui(|u| {
-                    u.notice(e.to_string());
+                    u.ocr_status = Some(Err(e.to_string()));
                     u.panel_open = true;
                 });
                 None
@@ -143,6 +146,10 @@ mod app {
             let _g = rt.enter();
             Arc::new(Translator::new(paths.clone(), client.clone(), cfg.dialogue.context_lines))
         };
+        {
+            let counts = translator.dict_counts();
+            shared.ui(|u| u.dict_counts = counts);
+        }
         let (srv_tx, srv_rx) = mpsc::unbounded_channel::<ServerCmd>();
         rt.spawn(server::supervise(shared.clone(), client, srv_rx));
         if let Some(o) = &ocr {
@@ -239,7 +246,11 @@ mod app {
                     u.region_shot = None;
                 }),
                 Command::RegionSelected(r) => {
-                    shared.cfg.write().unwrap().dialogue.region = r;
+                    {
+                        let mut c = shared.cfg.write().unwrap();
+                        c.dialogue.region = r;
+                        c.dialogue.region_set = true;
+                    }
                     shared.save_config();
                     shared.reset_watcher.store(true, Ordering::SeqCst);
                     shared.ui(|u| {
@@ -270,7 +281,10 @@ mod app {
                 }
                 Command::ReloadGlossary => {
                     let (n, f) = tr.reload_dictionaries();
-                    shared.ui(|u| u.notice(format!("Словари перечитаны: терминов {n}, исправлений {f}")));
+                    shared.ui(|u| {
+                        u.dict_counts = (n, f);
+                        u.notice(format!("Словари перечитаны: терминов {n}, исправлений {f}"));
+                    });
                 }
                 Command::RunBench => {
                     let sh = shared.clone();

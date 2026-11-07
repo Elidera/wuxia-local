@@ -126,6 +126,8 @@ pub struct Dialogue {
     pub style_hint: String,
     /// Translate speaker names in "Имя：реплика" separately (cached).
     pub split_speaker: bool,
+    /// The user has picked the subtitle region at least once.
+    pub region_set: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +266,7 @@ impl Default for Dialogue {
             change_threshold: 0.03,
             style_hint: String::new(),
             split_speaker: true,
+            region_set: false,
         }
     }
 }

@@ -115,6 +115,7 @@ clear_frames = 4
 change_threshold = 0.03
 style_hint = ""
 split_speaker = true
+region_set = false
 
 [interface]
 # replace — замена на месте, backdrop — тёмная подложка, list — списком сбоку
