@@ -2,7 +2,7 @@
 use wuxia_core::glossary::Glossary;
 use wuxia_core::prompt::{build, PromptInput, PromptStyle, TextKind};
 
-const GLOSSARY: &str = include_str!("../../../assets/glossary/00_wuxia_common.tsv");
+const GLOSSARY: &str = include_str!("../../../assets/glossary/wwm_wuxia_common.tsv");
 const BENCH: &str = include_str!("../../../assets/bench/wwm_lines.txt");
 
 #[test]
@@ -32,4 +32,20 @@ fn bench_lines_get_terms_and_prompts() {
     // Longest match: 燕云十六州 must win over 燕云.
     let t: Vec<_> = g.find_in("燕云十六州，自古便是兵家必争之地。", 5).iter().map(|t| t.src.clone()).collect();
     assert_eq!(t, vec!["燕云十六州"]);
+}
+
+#[test]
+fn wuwa_glossary_and_english_lines() {
+    let mut g = wuxia_core::glossary::Glossary::new();
+    let n = g.load_tsv(include_str!("../../../assets/glossary/wuwa_terms.tsv"));
+    assert!(n > 50, "WuWa glossary has {n} terms");
+    let lines = include_str!("../../../assets/bench/wuwa_en_lines.txt");
+    let mut with_terms = 0;
+    for l in lines.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
+        assert_eq!(wuxia_core::lang::detect(l), Some(wuxia_core::lang::Lang::En), "{l}");
+        if !g.find_in(l, 8).is_empty() {
+            with_terms += 1;
+        }
+    }
+    assert!(with_terms >= 10, "only {with_terms} test lines use glossary terms");
 }
