@@ -1,4 +1,4 @@
-//! Wuxia Local — local neural game translator (Chinese → Russian).
+//! Wuxia Local — local neural game translator (English / Chinese → Russian).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(not(windows))]
@@ -21,6 +21,8 @@ mod interface;
 #[cfg(windows)]
 mod llm;
 #[cfg(windows)]
+mod mascot;
+#[cfg(windows)]
 mod ocr;
 #[cfg(windows)]
 mod paths;
@@ -29,11 +31,22 @@ mod state;
 #[cfg(windows)]
 mod translate;
 #[cfg(windows)]
+mod tray;
+#[cfg(windows)]
 mod ui;
 #[cfg(windows)]
 mod ui_panel;
 #[cfg(windows)]
 mod win;
+
+/// "v0.2.0 · 08.11.2026 14:30 · abc1234" — the build date and commit are set by CI.
+#[cfg(windows)]
+pub fn build_info() -> String {
+    match option_env!("WUXIA_BUILD") {
+        Some(b) if !b.is_empty() => format!("v{} · {b}", env!("CARGO_PKG_VERSION")),
+        _ => format!("v{} · локальная сборка", env!("CARGO_PKG_VERSION")),
+    }
+}
 
 #[cfg(windows)]
 fn main() {
@@ -98,7 +111,7 @@ mod app {
         win::set_dpi_aware();
         let paths = Paths::detect()?;
         let _log_guard = init_logging(&paths);
-        tracing::info!("Wuxia Local {} · данные: {}", env!("CARGO_PKG_VERSION"), paths.data.display());
+        tracing::info!("Wuxia Local {} · данные: {}", crate::build_info(), paths.data.display());
         std::panic::set_hook(Box::new(|info| {
             tracing::error!("panic: {info}");
         }));
@@ -125,10 +138,18 @@ mod app {
         }
 
         // OCR.
-        let ocr = match Ocr::spawn(&cfg.ocr.language) {
+        let ocr = match Ocr::spawn() {
             Ok(o) => {
-                tracing::info!("Windows OCR готов ({}), макс. размер {} px", cfg.ocr.language, o.max_dim);
-                shared.ui(|u| u.ocr_status = Some(Ok(())));
+                // A missing language pack is not fatal: the user may install it or switch the language.
+                let status = o.check_blocking(cfg.source_lang()).map_err(|e| e.to_string());
+                tracing::info!("Windows OCR ({}): {:?} · макс. размер {} px", cfg.source_lang().name_ru(), status, o.max_dim);
+                let failed = status.is_err();
+                shared.ui(|u| {
+                    u.ocr_status = Some(status);
+                    if failed {
+                        u.panel_open = true;
+                    }
+                });
                 Some(o)
             }
             Err(e) => {
@@ -144,7 +165,7 @@ mod app {
         let client = LlmClient::new(&server::base_url(&cfg), cfg.llm.request_timeout_s);
         let translator = {
             let _g = rt.enter();
-            Arc::new(Translator::new(paths.clone(), client.clone(), cfg.dialogue.context_lines))
+            Arc::new(Translator::new(paths.clone(), client.clone(), cfg.dialogue.context_lines, &cfg.general.profile))
         };
         {
             let counts = translator.dict_counts();
@@ -162,6 +183,7 @@ mod app {
             u.panel_open = true;
             u.focus_panel = true;
         });
+        crate::tray::spawn(cmd_tx.clone());
         {
             let tx = cmd_tx.clone();
             win::listen_show_panel(move || {
@@ -181,13 +203,15 @@ mod app {
                 .with_position([0.0, 0.0])
                 // Starts as a 1×1 window; ui.rs expands it to full screen once it renders
                 // transparently, so the screen never flashes black.
-                .with_inner_size([1.0, 1.0]),
+                .with_inner_size([1.0, 1.0])
+                .with_icon(crate::mascot::icon_data()),
             renderer: eframe::Renderer::Glow,
             vsync: true,
             ..Default::default()
         };
         let sh2 = shared.clone();
         let res = eframe::run_native("wuxia-local", options, Box::new(move |cc| Ok(Box::new(ui::WuxiaApp::new(cc, sh2)))));
+        crate::tray::remove();
         tracing::info!("выход");
         rt.shutdown_timeout(std::time::Duration::from_secs(2));
         res.map_err(|e| anyhow::anyhow!("окно: {e}"))
@@ -288,8 +312,48 @@ mod app {
                         }
                     });
                 }
+                Command::GameChanged => {
+                    let cfg = shared.cfg();
+                    let (n, f) = tr.reload_dictionaries(&cfg.general.profile);
+                    tr.clear_history();
+                    shared.reset_watcher.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let status = match &ocr {
+                        Some(o) => o.check(cfg.source_lang()).await.map_err(|e| e.to_string()),
+                        None => Err("OCR не запущен".into()),
+                    };
+                    shared.ui(|u| {
+                        u.dict_counts = (n, f);
+                        u.ocr_status = Some(status);
+                    });
+                    shared.save_config();
+                }
+                Command::Quit => {
+                    tracing::info!("выход по команде пользователя");
+                    crate::tray::remove();
+                    if let Some(ctx) = shared.egui.get() {
+                        ctx.send_viewport_cmd_to(eframe::egui::ViewportId::ROOT, eframe::egui::ViewportCommand::Close);
+                        ctx.request_repaint();
+                    }
+                    // Safety net: if the window loop does not end, leave anyway
+                    // (llama-server dies with us through the job object).
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                        std::process::exit(0);
+                    });
+                }
+                Command::PanelClosedToTray => {
+                    let first = !shared.cfg().general.tray_hint_shown;
+                    if first {
+                        crate::tray::balloon(
+                            "Wuxia Local работает в фоне",
+                            "Перевод и горячие клавиши продолжают работать. Значок с енотиком — у часов: клик открывает панель, правый клик — «Выход».",
+                        );
+                        shared.cfg.write().unwrap().general.tray_hint_shown = true;
+                        shared.save_config();
+                    }
+                }
                 Command::ReloadGlossary => {
-                    let (n, f) = tr.reload_dictionaries();
+                    let (n, f) = tr.reload_dictionaries(&shared.cfg().general.profile);
                     shared.ui(|u| {
                         u.dict_counts = (n, f);
                         u.notice(format!("Словари перечитаны: терминов {n}, исправлений {f}"));
@@ -317,8 +381,13 @@ mod app {
                         sh.ui(|u| u.test_result = Some("…".into()));
                         let cfg = sh.cfg();
                         let preset = cfg.active_model().clone();
-                        let src = tr.fix_ocr(&wuxia_core::text::normalize_line(&text));
-                        let kind = if src.chars().count() <= 8 && !src.contains(['，', '。', '！', '？']) {
+                        let lang = wuxia_core::lang::detect(&text).unwrap_or(cfg.source_lang());
+                        let src = tr.fix_ocr(&wuxia_core::text::normalize_for(&text, lang));
+                        let short = match lang {
+                            wuxia_core::lang::Lang::Zh => src.chars().count() <= 8,
+                            wuxia_core::lang::Lang::En => src.split_whitespace().count() <= 3,
+                        };
+                        let kind = if short && !src.contains(['，', '。', '！', '？', '.', '!', '?']) {
                             wuxia_core::prompt::TextKind::Interface
                         } else {
                             wuxia_core::prompt::TextKind::Dialogue
@@ -336,6 +405,11 @@ mod app {
                 }
                 Command::SaveConfig => shared.save_config(),
                 Command::Open(p) => open_path(&p),
+                Command::OpenUrl(u) => {
+                    if u.starts_with("https://") {
+                        let _ = std::process::Command::new("explorer").arg(&u).spawn();
+                    }
+                }
             }
         }
     }

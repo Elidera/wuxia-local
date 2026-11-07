@@ -44,10 +44,11 @@ impl Glossary {
             return;
         }
         let t = Term { src: src.to_string(), dst: dst.to_string(), note: note.trim().to_string() };
-        if let Some(&i) = self.index.get(src) {
+        let key = key_of(src);
+        if let Some(&i) = self.index.get(&key) {
             self.terms[i] = t;
         } else {
-            self.index.insert(t.src.clone(), self.terms.len());
+            self.index.insert(key, self.terms.len());
             self.terms.push(t);
         }
         let n = src.chars().count();
@@ -71,13 +72,15 @@ impl Glossary {
 
     /// Exact lookup (used for short UI labels: whole string is a known term).
     pub fn exact(&self, s: &str) -> Option<&Term> {
-        self.index.get(s.trim()).map(|&i| &self.terms[i])
+        self.index.get(&key_of(s.trim())).map(|&i| &self.terms[i])
     }
 
     /// Find terms occurring in `text`, longest match first, non-overlapping,
     /// deduplicated, in order of first appearance. At most `limit` terms.
+    /// Latin terms match case-insensitively and only as whole words
+    /// (an English plural "-s"/"-es" is allowed: "Echoes" finds "Echo").
     pub fn find_in(&self, text: &str, limit: usize) -> Vec<&Term> {
-        let chars: Vec<char> = text.chars().collect();
+        let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
         let mut found: Vec<usize> = Vec::new();
         let mut i = 0;
         'outer: while i < chars.len() && found.len() < limit {
@@ -87,10 +90,30 @@ impl Glossary {
                 }
                 let cand: String = chars[i..i + len].iter().collect();
                 if let Some(&idx) = self.index.get(&cand) {
+                    let latin = cand.chars().any(|c| c.is_ascii_alphabetic());
+                    let mut end = i + len;
+                    if latin {
+                        let word = |c: Option<&char>| c.map_or(false, |c| c.is_alphanumeric());
+                        if i > 0 && word(chars.get(i - 1)) {
+                            continue;
+                        }
+                        if word(chars.get(end)) {
+                            // allow plural endings
+                            let rest: String = chars[end..].iter().take(3).collect();
+                            let suf = if rest.starts_with("es") && !word(chars.get(end + 2)) {
+                                2
+                            } else if rest.starts_with('s') && !word(chars.get(end + 1)) {
+                                1
+                            } else {
+                                continue;
+                            };
+                            end += suf;
+                        }
+                    }
                     if !found.contains(&idx) {
                         found.push(idx);
                     }
-                    i += len;
+                    i = end;
                     continue 'outer;
                 }
             }
@@ -130,6 +153,11 @@ impl Glossary {
     }
 }
 
+/// Index key: ASCII letters lower-cased, everything else as is.
+fn key_of(s: &str) -> String {
+    s.chars().map(|c| c.to_ascii_lowercase()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +181,17 @@ mod tests {
         g.load_tsv("开封\tКайфын\n");
         assert_eq!(g.exact("开封").unwrap().dst, "Кайфын");
         assert_eq!(g.len(), 4);
+    }
+
+    #[test]
+    fn english_terms() {
+        let mut g = Glossary::new();
+        g.load_tsv("Rover\tСкиталец\nEcho\tЭхо\nTacet Field\tПоле Тацет\nJinzhou\tЦзиньчжоу\n");
+        let found: Vec<_> = g.find_in("The rover absorbed two Echoes near the TACET FIELD of Jinzhou.", 10).iter().map(|t| t.dst.as_str()).collect();
+        assert_eq!(found, vec!["Скиталец", "Эхо", "Поле Тацет", "Цзиньчжоу"]);
+        // Not inside other words.
+        assert!(g.find_in("Echolocation and Roverbot", 10).is_empty());
+        assert_eq!(g.exact(" echo ").unwrap().dst, "Эхо");
     }
 
     #[test]

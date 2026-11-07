@@ -10,6 +10,10 @@ on:
         description: "Models to test (comma separated ids: hymt2-1.8b, qwen3.5-2b, hymt2-7b)"
         required: false
         default: "hymt2-1.8b"
+      langs:
+        description: "Source languages to test: en (Wuthering Waves), zh (Where Winds Meet) or en,zh"
+        required: false
+        default: "en,zh"
   push:
     branches: [main]
     paths:
@@ -29,6 +33,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       MODELS: ${{ github.event.inputs.models || 'hymt2-1.8b' }}
+      LANGS: ${{ github.event.inputs.langs || 'en,zh' }}
       LLAMA_CACHE: ${{ github.workspace }}/models
     steps:
       - uses: actions/checkout@v4
@@ -75,10 +80,20 @@ jobs:
               if ! kill -0 $pid 2>/dev/null; then echo "server died"; tail -40 "reports/$id.server.log"; echo "::endgroup::"; return 1; fi
               sleep 5
             done
-            ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name" --prompt "$prompt" $extra \
-              --lines assets/bench/wwm_lines.txt --glossary assets/glossary --out "reports/$id.md" || true
-            ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name" --prompt "$prompt" $extra --batch \
-              --lines assets/bench/ui_lines.txt --glossary assets/glossary --out "reports/$id.ui.md" || true
+            if [[ ",$LANGS," == *",en,"* ]]; then
+              ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name (EN, WuWa)" --prompt "$prompt" $extra \
+                --game "Wuthering Waves" --profile wuwa \
+                --lines assets/bench/wuwa_en_lines.txt --glossary assets/glossary --out "reports/$id.en.md" || true
+              ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name (EN, WuWa)" --prompt "$prompt" $extra --batch \
+                --game "Wuthering Waves" --profile wuwa \
+                --lines assets/bench/wuwa_en_ui.txt --glossary assets/glossary --out "reports/$id.en.ui.md" || true
+            fi
+            if [[ ",$LANGS," == *",zh,"* ]]; then
+              ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name (ZH, WWM)" --prompt "$prompt" $extra \
+                --lines assets/bench/wwm_lines.txt --glossary assets/glossary --out "reports/$id.md" || true
+              ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name (ZH, WWM)" --prompt "$prompt" $extra --batch \
+                --lines assets/bench/ui_lines.txt --glossary assets/glossary --out "reports/$id.ui.md" || true
+            fi
             kill $pid; wait $pid 2>/dev/null || true
             tail -5 "reports/$id.server.log"
             echo "::endgroup::"

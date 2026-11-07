@@ -10,6 +10,7 @@ pub mod fixes;
 pub mod glossary;
 pub mod history;
 pub mod image;
+pub mod lang;
 pub mod prompt;
 pub mod similarity;
 pub mod text;

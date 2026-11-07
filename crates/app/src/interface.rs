@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wuxia_core::image::{contrast_text, luma, Frame};
 use wuxia_core::prompt::TextKind;
-use wuxia_core::text;
 
 /// Coarse 32×18 luminance grid of the whole screen, for auto-hide.
 fn coarse(frame: &Frame) -> Vec<f32> {
@@ -68,7 +67,8 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     };
     shared.ui(|u| u.interface = Some(InterfaceView { items: vec![], pending: 1, generation: gen }));
     let t0 = Instant::now();
-    let lines = match ocr.recognize(frame.clone(), up).await {
+    let lang = cfg.source_lang();
+    let lines = match ocr.recognize(frame.clone(), up, lang).await {
         Ok(l) => l,
         Err(e) => {
             shared.ui(|u| {
@@ -81,7 +81,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let ocr_ms = t0.elapsed().as_millis();
     let items: Vec<InterfaceItem> = lines
         .into_iter()
-        .filter(|l| text::has_han(&l.text))
+        .filter(|l| wuxia_core::lang::is_label(&l.text, lang))
         .take(cfg.interface.max_lines)
         .map(|l| {
             let bg = frame.ring_color(&l.rect);
@@ -99,7 +99,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     if items.is_empty() {
         shared.ui(|u| {
             u.interface = None;
-            u.notice("На экране не найден китайский текст")
+            u.notice("На экране не найден текст на языке игры")
         });
         return;
     }

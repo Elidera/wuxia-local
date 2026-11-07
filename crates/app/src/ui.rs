@@ -150,7 +150,8 @@ impl eframe::App for WuxiaApp {
                     Err(e) => {
                         self.exclude_attempts += 1;
                         if self.exclude_attempts >= 20 {
-                            self.shared.ui(|u| u.notice(format!("Не удалось изменить видимость оверлея для захвата: {e}")));
+                            // Harmless: our BitBlt capture never sees the layered overlay anyway.
+                            tracing::warn!("оверлей: не удалось изменить видимость для захвата: {e}");
                             self.applied_visibility.0 = Some(want_visible);
                         } else {
                             ctx.request_repaint_after(Duration::from_millis(250));
@@ -460,11 +461,14 @@ impl WuxiaApp {
                 .with_title(PANEL_TITLE)
                 .with_inner_size([880.0, 720.0])
                 .with_min_inner_size([720.0, 480.0])
+                .with_icon(crate::mascot::icon_data())
                 .with_active(true),
             |ctx, _class| {
                 protect_now = true;
                 if ctx.input(|i| i.viewport().close_requested()) {
+                    // ✕ hides the panel; the program keeps running in the tray.
                     shared.ui(|u| u.panel_open = false);
+                    shared.send(Command::PanelClosedToTray);
                 }
                 dirty |= crate::ui_panel::panel_ui(ctx, &shared, st, ocr_view.as_ref());
             },

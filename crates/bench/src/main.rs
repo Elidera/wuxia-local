@@ -25,6 +25,9 @@ struct Args {
     no_think: bool,
     batch: bool,
     out: Option<String>,
+    /// Game title for the prompt; also selects `<profile>_*.tsv` glossaries.
+    game: String,
+    profile: String,
 }
 
 fn parse_args() -> Args {
@@ -41,6 +44,8 @@ fn parse_args() -> Args {
         no_think: false,
         batch: false,
         out: None,
+        game: "Where Winds Meet (燕云十六声)".into(),
+        profile: "wwm".into(),
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -57,6 +62,8 @@ fn parse_args() -> Args {
             "--top-k" => a.top_k = val().parse().unwrap_or(a.top_k),
             "--repeat" => a.repeat = val().parse().unwrap_or(a.repeat),
             "--out" => a.out = Some(val()),
+            "--game" => a.game = val(),
+            "--profile" => a.profile = val(),
             "--no-think" => {
                 a.no_think = true;
                 i += 1;
@@ -77,10 +84,21 @@ fn parse_args() -> Args {
     a
 }
 
-fn load_glossary(dir: &str) -> Glossary {
+/// Same rule as the app: `<profile>_*.tsv` only for that game.
+fn load_glossary(dir: &str, profile: &str) -> Glossary {
+    const PROFILES: &[&str] = &["wuwa", "wwm", "custom"];
     let mut g = Glossary::new();
     let mut files: Vec<_> = std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "tsv")).collect())
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().map_or(false, |e| e == "tsv"))
+                .filter(|p| {
+                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                    PROFILES.iter().all(|id| *id == profile || !stem.starts_with(&format!("{id}_")))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     files.sort();
     for f in files {
@@ -134,7 +152,7 @@ fn run_batch(a: &Args, lines: &[&str], g: &Glossary, agent: &ureq::Agent) {
                 }
             }
         }
-        let msgs = prompt::build_batch(style, chunk, &terms, "Where Winds Meet (燕云十六声)");
+        let msgs = prompt::build_batch(style, chunk, &terms, &a.game);
         let parts = chat_n(agent, a, &msgs, 48 * chunk.len() as u32 + 64)
             .map(|raw| {
                 let p = prompt::parse_batch_indexed(&raw, chunk.len());
@@ -158,7 +176,7 @@ fn run_batch(a: &Args, lines: &[&str], g: &Glossary, agent: &ureq::Agent) {
                 terms: g.find_in(l, 24),
                 context_src: String::new(),
                 context_pairs: String::new(),
-                game: "Where Winds Meet (燕云十六声)",
+                game: &a.game,
                 style_hint: "",
             };
             let t = chat(agent, a, &prompt::build(style, &inp))
@@ -183,7 +201,7 @@ fn main() {
     let a = parse_args();
     let text = std::fs::read_to_string(&a.lines).expect("lines file");
     let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
-    let g = load_glossary(&a.glossary);
+    let g = load_glossary(&a.glossary, &a.profile);
     let style = PromptStyle::parse(&a.prompt);
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).build();
     if a.batch {
@@ -205,7 +223,7 @@ fn main() {
             terms,
             context_src: hist.source_context(),
             context_pairs: hist.paired_context(),
-            game: "Where Winds Meet (燕云十六声)",
+            game: &a.game,
             style_hint: "",
         };
         let msgs = prompt::build(style, &inp);

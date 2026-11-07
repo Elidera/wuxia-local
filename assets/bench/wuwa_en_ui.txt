@@ -1,0 +1,31 @@
+# English UI labels for the batch (screen) test.
+Inventory
+Resonators
+Data Bank
+Quests
+Events
+Mail
+Settings
+Claim All
+Confirm
+Cancel
+Level Up
+Ascension
+Weapon
+Echo
+Main Stat
+Sub-Stats
+Union Level
+Daily Activity
+Waveplate
+Recover
+Fast Travel
+Teleport
+Track Quest
+Skip
+Auto Play
+Rewards Preview
+Not enough materials
+Battle Pass
+Friends
+Exit Game

@@ -20,6 +20,9 @@ pub const YELLOW: Color32 = Color32::from_rgb(226, 182, 84);
 pub const TEXT: Color32 = Color32::from_rgb(234, 228, 216);
 pub const WEAK: Color32 = Color32::from_rgb(150, 146, 138);
 
+/// Donation page. Empty = the «Поддержать» button is hidden.
+pub const DONATE_URL: &str = "";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
@@ -35,6 +38,7 @@ pub struct PanelState {
     pub tab: Tab,
     pub edits: HashMap<String, String>,
     pub test_input: String,
+    pub settings_query: String,
 }
 
 pub struct OcrView {
@@ -146,7 +150,60 @@ fn toggle(ui: &mut Ui, on: &mut bool) -> egui::Response {
     resp
 }
 
+// ---------- settings search ----------
+
+#[derive(Default)]
+struct Search {
+    words: Vec<String>,
+    /// Title of the card being drawn: a query matching the title shows the whole card.
+    title: String,
+}
+
+thread_local! {
+    static SEARCH: std::cell::RefCell<Search> = std::cell::RefCell::new(Search::default());
+}
+
+fn fold(s: &str) -> String {
+    s.to_lowercase().replace('ё', "е")
+}
+
+fn search_set(query: &str) {
+    SEARCH.with(|s| {
+        let mut s = s.borrow_mut();
+        s.words = fold(query).split_whitespace().map(str::to_string).collect();
+        s.title.clear();
+    });
+}
+
+/// Does `text` (plus the current card title) contain every word of the query?
+fn search_hit(text: &str) -> bool {
+    SEARCH.with(|s| {
+        let s = s.borrow();
+        if s.words.is_empty() {
+            return true;
+        }
+        let hay = fold(&format!("{} {text}", s.title));
+        s.words.iter().all(|w| hay.contains(w.as_str()))
+    })
+}
+
+/// A settings card that hides itself when nothing in it matches the search.
+/// `keys` lists the words of all its rows (labels and hints).
+fn search_card(ui: &mut Ui, title: &str, keys: &str, add: impl FnOnce(&mut Ui)) -> bool {
+    SEARCH.with(|s| s.borrow_mut().title = title.to_string());
+    let shown = search_hit(keys);
+    if shown {
+        card(ui, title, add);
+        ui.add_space(8.0);
+    }
+    SEARCH.with(|s| s.borrow_mut().title.clear());
+    shown
+}
+
 fn setting_row(ui: &mut Ui, label: &str, help: &str, add: impl FnOnce(&mut Ui) -> bool) -> bool {
+    if !search_hit(&format!("{label} {help}")) {
+        return false;
+    }
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -189,13 +246,19 @@ fn big_action(ui: &mut Ui, title: &str, subtitle: &str, key: &str, active: bool,
         .rounding(Rounding::same(10.0))
         .inner_margin(Margin::same(12.0))
         .show(ui, |ui| {
-            ui.set_width(width - 24.0);
-            ui.set_min_height(58.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(title).size(16.5).family(FontFamily::Name("bold".into())).color(if active { GOLD } else { TEXT }));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| key_chip(ui, key));
+            // The caller lays buttons out in a row: without an explicit vertical layout the
+            // subtitle would be placed to the right of the title and widen the button.
+            let w = (width - 26.0).max(120.0);
+            ui.set_width(w);
+            ui.set_max_width(w);
+            ui.vertical(|ui| {
+                ui.set_min_height(58.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(title).size(16.5).family(FontFamily::Name("bold".into())).color(if active { GOLD } else { TEXT }));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| key_chip(ui, key));
+                });
+                hint(ui, subtitle);
             });
-            hint(ui, subtitle);
         })
         .response
         .interact(Sense::click());
@@ -266,16 +329,40 @@ pub fn panel_ui(ctx: &egui::Context, shared: &Arc<Shared>, st: &mut PanelState, 
                     st.tab = tab;
                 }
             }
-            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(WEAK));
+            ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                ui.label(RichText::new(crate::build_info()).small().color(WEAK));
+                ui.add_space(2.0);
+                let quit = egui::Button::new(RichText::new("⏻  Выход").color(WEAK)).fill(Color32::TRANSPARENT).min_size(vec2(130.0, 26.0));
+                if ui.add(quit).on_hover_text("Полностью закрыть программу. Крестик окна только прячет панель в трей.").clicked() {
+                    shared.send(Command::Quit);
+                }
+                if !DONATE_URL.is_empty() {
+                    let b = egui::Button::new(RichText::new("♥  Поддержать").color(Color32::BLACK))
+                        .fill(GOLD)
+                        .rounding(Rounding::same(8.0))
+                        .min_size(vec2(130.0, 30.0));
+                    if ui.add(b).on_hover_text("Программа бесплатная. Если она вам помогает — можно угостить енотика печенькой.").clicked() {
+                        shared.send(Command::OpenUrl(DONATE_URL.to_string()));
+                    }
+                }
+                ui.add_space(4.0);
+                let space = ui.available_height();
+                if space > 90.0 {
+                    let h = space.min(170.0) - 6.0;
+                    let r = crate::mascot::widget(ui, vec2(130.0, h), mascot_mood(shared));
+                    if r.clicked() && !DONATE_URL.is_empty() {
+                        shared.send(Command::OpenUrl(DONATE_URL.to_string()));
+                    }
+                }
             });
         });
 
     egui::CentralPanel::default().frame(egui::Frame::none().fill(BG).inner_margin(Margin::same(16.0))).show(ctx, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(ui.available_width());
             dirty |= match st.tab {
                 Tab::Home => page_home(ui, shared),
-                Tab::Settings => page_settings(ui, shared),
+                Tab::Settings => page_settings(ui, shared, &mut st.settings_query),
                 Tab::Dictionaries => page_dictionaries(ui, shared, &mut st.edits),
                 Tab::Check => page_check(ui, shared, &mut st.test_input, ocr_view),
                 Tab::Help => page_help(ui, shared),
@@ -285,7 +372,30 @@ pub fn panel_ui(ctx: &egui::Context, shared: &Arc<Shared>, st: &mut PanelState, 
     dirty
 }
 
+fn mascot_mood(shared: &Arc<Shared>) -> crate::mascot::Mood {
+    use crate::mascot::Mood;
+    use crate::state::ServerStatus;
+    let u = shared.ui.lock().unwrap();
+    let error = matches!(u.server, Some(ServerStatus::Failed(_))) || matches!(u.ocr_status, Some(Err(_)));
+    let working = u.dialogue.as_ref().map_or(false, |d| d.pending)
+        || u.interface.as_ref().map_or(false, |i| i.pending > 0)
+        || !matches!(u.server, Some(ServerStatus::Ready { .. }) | Some(ServerStatus::Failed(_)));
+    if error {
+        Mood::Error
+    } else if working {
+        Mood::Working
+    } else if !u.dialogue_on || u.paused_unfocused {
+        Mood::Sleeping
+    } else {
+        Mood::Idle
+    }
+}
+
 fn header(ui: &mut Ui, shared: &Arc<Shared>) {
+    let (game, lang) = {
+        let c = shared.cfg();
+        (crate::config::profile(&c.general.profile).name.to_string(), c.source_lang())
+    };
     let (server, dialogue_on, paused) = {
         let u = shared.ui.lock().unwrap();
         (u.server.clone(), u.dialogue_on, u.paused_unfocused)
@@ -298,7 +408,7 @@ fn header(ui: &mut Ui, shared: &Arc<Shared>) {
         ui.add_space(6.0);
         ui.vertical(|ui| {
             ui.label(RichText::new("Wuxia Local").size(19.0).family(FontFamily::Name("bold".into())));
-            ui.label(RichText::new("Локальный переводчик игр с китайского").small().color(WEAK));
+            ui.label(RichText::new(format!("{game} · {} → русский", lang.name_ru())).small().color(WEAK));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let mut on = dialogue_on;
@@ -365,7 +475,11 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
                 Some(Err(e)) => e.clone(),
                 _ => String::new(),
             };
-            check_item(ui, ocr_ok, "Распознавание китайского текста (Windows OCR)", &ocr_detail);
+            let ocr_title = match cfg.source_lang() {
+                wuxia_core::lang::Lang::En => "Распознавание английского текста (Windows OCR)",
+                wuxia_core::lang::Lang::Zh => "Распознавание китайского текста (Windows OCR)",
+            };
+            check_item(ui, ocr_ok, ocr_title, &ocr_detail);
             ui.horizontal(|ui| {
                 check_item(ui, Some(region_ok), "Область субтитров выбрана", if region_ok { "" } else { "Откройте игру с субтитрами и выберите область" });
                 if !region_ok {
@@ -382,7 +496,7 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
     }
 
     // Big actions.
-    let w = (ui.available_width() - 8.0) / 2.0;
+    let w = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).floor();
     ui.horizontal(|ui| {
         let (title, sub) = if dialogue_on { ("Диалоги включены", "Субтитры переводятся автоматически") } else { ("Диалоги выключены", "Нажмите, чтобы переводить субтитры") };
         if big_action(ui, title, sub, &hk.toggle_dialogue, dialogue_on, w) {
@@ -471,20 +585,57 @@ fn stat(ui: &mut Ui, value: &str, label: &str) {
     });
 }
 
-fn page_settings(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
+fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool {
     let mut dirty = false;
     ui.heading("Настройки");
     hint(ui, "Изменения применяются сразу и сохраняются автоматически.");
     ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(query).hint_text("🔍  Поиск по настройкам: «шрифт», «скрин», «F7»…").desired_width((ui.available_width() - 40.0).max(160.0)));
+        if !query.is_empty() && ui.small_button("✕").on_hover_text("Очистить поиск").clicked() {
+            query.clear();
+        }
+    });
+    ui.add_space(8.0);
+    search_set(query);
     let mut c = shared.cfg.write().unwrap();
+    let mut game_changed = false;
+    let mut any = false;
 
-    card(ui, "Перевод субтитров", |ui| {
+    any |= search_card(ui, "Игра", "игра wuthering waves where winds meet другая словарь терминов окно язык текста английский китайский самой заголовок окна название нейросети", |ui| {
+        let g = &mut c.general;
+        let options: Vec<(&str, &str)> = crate::config::PROFILES.iter().map(|p| (p.id, p.name)).collect();
+        let mut prof = g.profile.clone();
+        if setting_row(ui, "Игра", "Wuthering Waves, Where Winds Meet или другая: подставляет словарь терминов и узнаёт окно игры", |ui| segmented(ui, &mut prof, &options)) {
+            g.profile = prof;
+            g.source_lang = crate::config::profile(&g.profile).langs[0].into();
+            game_changed = true;
+        }
+        if setting_row(ui, "Язык текста в игре", "Английский или китайский — как выбрано в самой игре", |ui| {
+            segmented(ui, &mut g.source_lang, &[("zh", "Китайский"), ("en", "Английский")])
+        }) {
+            game_changed = true;
+        }
+        if g.profile == "custom" {
+            dirty |= setting_row(ui, "Заголовок окна игры", "Часть названия окна; несколько вариантов — через |", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut g.window_match).desired_width(220.0)).changed()
+            });
+            dirty |= setting_row(ui, "Название игры", "Для подсказки нейросети", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut g.game_title).desired_width(220.0)).changed()
+            });
+        }
+    });
+    if game_changed {
+        c.apply_profile();
+    }
+
+    any |= search_card(ui, "Перевод субтитров", "размер шрифта затемнение подложки где показывать перевод поверх над под субтитрами помнить реплик контекста связности диалога отделять имя говорящего реплика пожелание к стилю qwen", |ui| {
         let d = &mut c.dialogue;
         dirty |= setting_row(ui, "Размер шрифта", "", |ui| ui.add(egui::Slider::new(&mut d.font_size, 14.0..=56.0).suffix(" пт")).changed());
         dirty |= setting_row(ui, "Затемнение подложки", "0 — без подложки", |ui| {
             ui.add(egui::Slider::new(&mut d.backdrop_opacity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0} %", v * 100.0))).changed()
         });
-        dirty |= setting_row(ui, "Где показывать перевод", "Относительно субтитров игры", |ui| {
+        dirty |= setting_row(ui, "Где показывать перевод", "Поверх, над или под субтитрами игры", |ui| {
             segmented(ui, &mut d.position, &[("over", "Поверх"), ("above", "Над"), ("below", "Под")])
         });
         dirty |= setting_row(ui, "Помнить реплик для контекста", "Помогает связности диалога", |ui| ui.add(egui::Slider::new(&mut d.context_lines, 0..=6)).changed());
@@ -493,11 +644,10 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             ui.add(egui::TextEdit::singleline(&mut d.style_hint).hint_text("например: торжественнее").desired_width(220.0)).changed()
         });
     });
-    ui.add_space(8.0);
 
-    card(ui, "Распознавание субтитров", |ui| {
+    any |= search_card(ui, "Распознавание субтитров", "цвет текста субтитров тёмный светлый порог яркости бледный текст мусора повышать контраст пёстром фоне частота проверки нагрузка процессор", |ui| {
         let d = &mut c.dialogue;
-        dirty |= setting_row(ui, "Цвет текста субтитров", "", |ui| segmented(ui, &mut d.text_color, &[("dark", "Тёмный"), ("light", "Светлый")]));
+        dirty |= setting_row(ui, "Цвет текста субтитров", "Тёмный или светлый", |ui| segmented(ui, &mut d.text_color, &[("dark", "Тёмный"), ("light", "Светлый")]));
         dirty |= setting_row(ui, "Порог яркости текста", "Ниже — ловит бледный текст, выше — меньше мусора", |ui| {
             ui.add(egui::Slider::new(&mut d.ink_threshold, 120..=250)).changed()
         });
@@ -510,19 +660,17 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             ui.add(egui::Slider::new(&mut d.interval_ms, 80..=500).suffix(" мс")).changed()
         });
     });
-    ui.add_space(8.0);
 
-    card(ui, "Перевод экрана", |ui| {
+    any |= search_card(ui, "Перевод экрана", "как показывать списком подложкой заменой текста размер шрифта высоты исходной надписи скрывать при смене экрана меню закрылось", |ui| {
         let i = &mut c.interface;
-        dirty |= setting_row(ui, "Как показывать", "", |ui| segmented(ui, &mut i.mode, &[("list", "Списком"), ("backdrop", "Подложка"), ("replace", "Замена")]));
+        dirty |= setting_row(ui, "Как показывать", "Списком, подложкой или заменой текста", |ui| segmented(ui, &mut i.mode, &[("list", "Списком"), ("backdrop", "Подложка"), ("replace", "Замена")]));
         dirty |= setting_row(ui, "Размер шрифта", "Относительно высоты исходной надписи", |ui| {
             ui.add(egui::Slider::new(&mut i.font_scale, 0.5..=1.2).custom_formatter(|v, _| format!("{:.0} %", v * 100.0))).changed()
         });
         dirty |= setting_row(ui, "Скрывать при смене экрана", "Перевод исчезает, когда меню закрылось", |ui| toggle(ui, &mut i.auto_hide).changed());
     });
-    ui.add_space(8.0);
 
-    card(ui, "Прочее", |ui| {
+    any |= search_card(ui, "Прочее", "пауза игра не активна экономит процессор видно на скриншотах скриншот перевод использовать видеокарту тормозит модель процессор", |ui| {
         let g = &mut c.general;
         dirty |= setting_row(ui, "Пауза, когда игра не активна", "Экономит процессор", |ui| toggle(ui, &mut g.pause_when_unfocused).changed());
         dirty |= setting_row(ui, "Видно на скриншотах", "Включайте, чтобы сделать скриншот с переводом", |ui| toggle(ui, &mut g.visible_in_screenshots).changed());
@@ -536,8 +684,12 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
     });
     ui.add_space(8.0);
 
-    card(ui, "Горячие клавиши", |ui| {
-        let hk = &c.hotkeys;
+    let hk = c.hotkeys.clone();
+    let keys = format!(
+        "горячие клавиши {} {} {} {} {} перевод диалогов экран оригинал область субтитров панель config.toml",
+        hk.toggle_dialogue, hk.screen_translate, hk.show_original, hk.select_region, hk.panel
+    );
+    any |= search_card(ui, "Горячие клавиши", &keys, |ui| {
         for (k, what) in [
             (&hk.toggle_dialogue, "Включить / выключить перевод диалогов"),
             (&hk.screen_translate, "Перевести экран / убрать перевод"),
@@ -545,6 +697,9 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             (&hk.select_region, "Выбрать область субтитров"),
             (&hk.panel, "Открыть / закрыть эту панель"),
         ] {
+            if !search_hit(&format!("{k} {what}")) {
+                continue;
+            }
             ui.horizontal(|ui| {
                 key_chip(ui, k);
                 ui.label(what);
@@ -555,6 +710,14 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             shared.send(Command::Open(shared.paths.config()));
         }
     });
+    drop(c);
+    search_set("");
+    if !any {
+        hint(ui, "Ничего не найдено. Попробуйте другое слово.");
+    }
+    if game_changed {
+        shared.send(Command::GameChanged);
+    }
     dirty
 }
 
@@ -624,7 +787,7 @@ fn page_check(ui: &mut Ui, shared: &Arc<Shared>, test_input: &mut String, ocr_vi
     ui.heading("Проверка");
     ui.add_space(6.0);
     card(ui, "Перевести текст", |ui| {
-        hint(ui, "Вставьте любой китайский текст — например, из видео или с сайта — и нажмите Enter.");
+        hint(ui, "Вставьте английский или китайский текст — например, из видео или с сайта — и нажмите Enter.");
         let resp = ui.add(egui::TextEdit::multiline(test_input).hint_text("少侠，此去开封，路途遥远……").desired_rows(2).desired_width(f32::INFINITY));
         let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
         if (ui.add(egui::Button::new(RichText::new("Перевести").color(Color32::BLACK)).fill(GOLD)).clicked() || enter) && !test_input.trim().is_empty() {

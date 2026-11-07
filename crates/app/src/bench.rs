@@ -21,7 +21,7 @@ pub fn lines_file(shared: &Shared) -> PathBuf {
     if user.exists() {
         user
     } else {
-        shared.paths.install.join("bench").join("wwm_lines.txt")
+        shared.paths.install.join("bench").join(if shared.cfg().source_lang() == wuxia_core::lang::Lang::En { "wuwa_en_lines.txt" } else { "wwm_lines.txt" })
     }
 }
 
@@ -37,7 +37,7 @@ pub async fn run(shared: Arc<Shared>) -> Result<PathBuf> {
     let lines: Vec<String> =
         text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string).collect();
     let cfg = shared.cfg();
-    let glossary = crate::translate::load_glossary(&shared.paths);
+    let glossary = crate::translate::load_glossary(&shared.paths, &shared.cfg().general.profile);
     let progress = |s: String| shared.ui(|u| u.bench_progress = Some(s));
 
     let mut results: Vec<(String, Vec<Row>, String)> = Vec::new();
@@ -80,7 +80,7 @@ pub async fn run(shared: Arc<Shared>) -> Result<PathBuf> {
             (client, Some(st))
         };
 
-        let tr = Translator::new(shared.paths.clone(), client, cfg.dialogue.context_lines);
+        let tr = Translator::new(shared.paths.clone(), client, cfg.dialogue.context_lines, &cfg.general.profile);
         let mut rows = Vec::new();
         for (i, l) in lines.iter().enumerate() {
             progress(format!("Бенчмарк: {} — {}/{}", preset.name, i + 1, lines.len()));

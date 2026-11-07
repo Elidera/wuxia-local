@@ -19,17 +19,22 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
+    /// Game profile id (see [`PROFILES`]): "wuwa", "wwm" or "custom".
+    /// For a known profile `game_title` and `window_match` are filled from it.
+    pub profile: String,
+    /// Language of the game text: "en" or "zh".
+    pub source_lang: String,
     /// Shown to instruct models in the prompt.
     pub game_title: String,
-    /// Substring of the game window title. Capture pauses while another window
-    /// is in the foreground. Empty = always active.
+    /// Substrings of the game window title separated by `|`. Capture pauses while
+    /// another window is in the foreground. Empty = always active.
     pub window_match: String,
-    /// Optional exe name of the game (e.g. "wwm.exe"). If set, it is used instead of the title.
-    pub process_match: String,
     pub pause_when_unfocused: bool,
     /// Show the overlay and the panel on screenshots (Win+Shift+S, OBS).
     /// Off by default: then they can never get into our own OCR.
     pub visible_in_screenshots: bool,
+    /// The "I'm still here, in the tray" notice was shown after the first ✕.
+    pub tray_hint_shown: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,8 +182,37 @@ impl Default for Config {
 
 impl Default for General {
     fn default() -> Self {
-        Self { game_title: "Where Winds Meet (燕云十六声)".into(), window_match: "Where Winds Meet".into(), process_match: String::new(), pause_when_unfocused: true, visible_in_screenshots: false }
+        Self {
+            profile: "wuwa".into(),
+            source_lang: "en".into(),
+            game_title: "Wuthering Waves".into(),
+            window_match: "Wuthering Waves|鸣潮".into(),
+            pause_when_unfocused: true,
+            visible_in_screenshots: false,
+            tray_hint_shown: false,
+        }
     }
+}
+
+/// A supported game: how to recognise its window and which dictionaries to load
+/// (glossary files named `<id>_*.tsv` are loaded only for that profile).
+pub struct GameProfile {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub title: &'static str,
+    pub window_match: &'static str,
+    /// Text languages the game offers that we can translate, the first is the default.
+    pub langs: &'static [&'static str],
+}
+
+pub const PROFILES: &[GameProfile] = &[
+    GameProfile { id: "wuwa", name: "Wuthering Waves", title: "Wuthering Waves", window_match: "Wuthering Waves|鸣潮", langs: &["en", "zh"] },
+    GameProfile { id: "wwm", name: "Where Winds Meet", title: "Where Winds Meet (燕云十六声)", window_match: "Where Winds Meet|燕云十六声", langs: &["zh", "en"] },
+    GameProfile { id: "custom", name: "Другая игра", title: "", window_match: "", langs: &["en", "zh"] },
+];
+
+pub fn profile(id: &str) -> &'static GameProfile {
+    PROFILES.iter().find(|p| p.id == id).unwrap_or(&PROFILES[PROFILES.len() - 1])
 }
 
 impl Default for Llm {
@@ -311,6 +345,7 @@ impl Config {
         if cfg.models.is_empty() {
             cfg.models = default_models();
         }
+        cfg.apply_profile();
         Ok(cfg)
     }
 
@@ -319,6 +354,22 @@ impl Config {
         std::fs::write(&tmp, toml::to_string_pretty(self)?)?;
         std::fs::rename(tmp, paths.config())?;
         Ok(())
+    }
+
+    /// Fill game title / window match from a known profile ("custom" keeps the user's values).
+    pub fn apply_profile(&mut self) {
+        let p = profile(&self.general.profile);
+        if p.id != "custom" {
+            self.general.game_title = p.title.into();
+            self.general.window_match = p.window_match.into();
+        }
+        if self.general.source_lang != "en" && self.general.source_lang != "zh" {
+            self.general.source_lang = p.langs[0].into();
+        }
+    }
+
+    pub fn source_lang(&self) -> wuxia_core::lang::Lang {
+        wuxia_core::lang::Lang::from_code(&self.general.source_lang)
     }
 
     pub fn active_model(&self) -> &ModelPreset {

@@ -45,6 +45,14 @@ pub enum Command {
     SaveCorrection { src: String, dst: String },
     TestTranslate(String),
     ReloadGlossary,
+    /// Game profile or text language changed: reload dictionaries, check OCR.
+    GameChanged,
+    /// Exit the program (tray menu or the panel's «Выход»).
+    Quit,
+    /// Open a web page in the default browser.
+    OpenUrl(String),
+    /// The panel was closed with ✕: explain once where the program went.
+    PanelClosedToTray,
     RunBench,
     SaveConfig,
     Open(std::path::PathBuf),

@@ -1,11 +1,10 @@
 //! Thin wrappers over Win32 calls used across the app.
 //! Window handles are passed around as `isize` because `HWND` is `!Send`.
 
-use windows::core::{HSTRING, PCWSTR, PWSTR};
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND};
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, OpenEventW, OpenProcess, QueryFullProcessImageNameW, SetEvent, WaitForSingleObject,
-    EVENT_MODIFY_STATE, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE,
 };
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
@@ -13,7 +12,7 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId,
+    FindWindowW, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
     SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow, SW_RESTORE,
     SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
@@ -78,37 +77,39 @@ pub fn bring_to_front(hwnd: isize) {
     }
 }
 
-/// Executable name (lower-case, e.g. "chrome.exe") of the foreground window's process.
-pub fn foreground_process_name() -> String {
+/// Window class of the foreground window (e.g. "UnrealWindow", "Chrome_WidgetWin_1").
+/// Reads only the window itself: no handle to the game process is ever opened,
+/// so anti-cheat has nothing to see.
+pub fn foreground_class() -> String {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
             return String::new();
         }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
-        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return String::new();
-        };
-        let mut buf = [0u16; 520];
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
-        let _ = CloseHandle(h);
-        if !ok {
-            return String::new();
-        }
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        path.rsplit('\\').next().unwrap_or("").to_lowercase()
+        let mut buf = [0u16; 256];
+        let n = GetClassNameW(hwnd, &mut buf);
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
     }
 }
 
-/// Programs that are never the game even if their title mentions it
-/// (a browser tab "Where Winds Meet guide", this chat, a video…).
-pub const NOT_GAME: &[&str] = &[
-    "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "browser.exe", "brave.exe", "vivaldi.exe", "yandex.exe",
-    "claude.exe", "explorer.exe", "notepad.exe", "telegram.exe", "discord.exe", "code.exe", "obs64.exe",
-    "wuxia-local.exe", "steamwebhelper.exe",
+/// Window classes that are never the game even if the title mentions it
+/// (a browser tab "Wuthering Waves guide", Explorer folder, this chat, a video…).
+/// Chromium and Electron apps (Chrome, Edge, Yandex, Discord, VS Code, Claude) share
+/// `Chrome_WidgetWin_*`; Telegram and OBS are Qt.
+pub const NOT_GAME_CLASSES: &[&str] = &[
+    "Chrome_WidgetWin", "MozillaWindowClass", "CabinetWClass", "ExploreWClass", "Notepad", "Qt", "ApplicationFrameWindow",
+    "ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "TaskManagerWindow", "SDL_app",
 ];
+
+/// Is the foreground window the game? `window_match` holds title parts separated by `|`.
+pub fn game_in_foreground(window_match: &str) -> bool {
+    let class = foreground_class();
+    if NOT_GAME_CLASSES.iter().any(|c| class.starts_with(c)) {
+        return false;
+    }
+    let title = foreground_title().to_lowercase();
+    window_match.split('|').map(str::trim).filter(|m| !m.is_empty()).any(|m| title.contains(&m.to_lowercase()))
+}
 
 const INSTANCE_MUTEX: &str = "Local\\WuxiaLocal.SingleInstance";
 const SHOW_PANEL_EVENT: &str = "Local\\WuxiaLocal.ShowPanel";

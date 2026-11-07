@@ -1,4 +1,6 @@
-//! OCR text cleanup and normalization for Chinese game text.
+//! OCR text cleanup and normalization for Chinese and English game text.
+
+use crate::lang::Lang;
 
 /// CJK ideographs (incl. extensions A and compatibility block).
 pub fn is_han(c: char) -> bool {
@@ -126,6 +128,93 @@ pub fn normalize_line(raw: &str) -> String {
     out[start..end].iter().collect()
 }
 
+/// Normalize one OCR line of English (or other Latin-script) text:
+/// collapse spaces, unify quotes/dashes, trim box borders but keep sentence
+/// punctuation and quotes.
+pub fn normalize_line_en(raw: &str) -> String {
+    let s: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| match c {
+            '‘' | '’' | '`' | '´' => '\'',
+            '“' | '”' | '„' => '"',
+            '…' => '\u{2026}',
+            c => c,
+        })
+        .collect();
+    let mut s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    // OCR often splits punctuation off the word: "Wait , Rover !" → "Wait, Rover!"
+    for p in [" ,", " .", " !", " ?", " ;", " :"] {
+        while s.contains(p) {
+            s = s.replace(p, &p[1..]);
+        }
+    }
+    let junk = |c: char| matches!(c, '|' | '_' | '~' | '=' | '+' | '*' | '^' | '¦' | '丨' | '•' | '·') || c.is_whitespace();
+    let s = s.trim_matches(junk);
+    // A lone dash/bullet at the start is a box border or list marker.
+    let s = s.trim_start_matches(|c: char| c == '-' || c == '—').trim_start();
+    s.to_string()
+}
+
+/// Normalize for the given source language.
+pub fn normalize_for(raw: &str, lang: Lang) -> String {
+    match lang {
+        Lang::Zh => normalize_line(raw),
+        Lang::En => normalize_line_en(raw),
+    }
+}
+
+/// Join English subtitle lines: with spaces, undoing hyphenated line breaks
+/// ("transla-" + "tion" → "translation").
+pub fn join_lines_en<S: AsRef<str>>(lines: &[S]) -> String {
+    let mut out = String::new();
+    for l in lines {
+        let l = normalize_line_en(l.as_ref());
+        if l.is_empty() {
+            continue;
+        }
+        if out.is_empty() {
+            out = l;
+            continue;
+        }
+        let hyphen_wrap = out.ends_with('-')
+            && out.chars().rev().nth(1).map_or(false, |c| c.is_alphabetic())
+            && l.chars().next().map_or(false, |c| c.is_lowercase());
+        if hyphen_wrap {
+            out.pop();
+        } else {
+            out.push(' ');
+        }
+        out.push_str(&l);
+    }
+    out
+}
+
+pub fn join_lines_for<S: AsRef<str>>(lines: &[S], lang: Lang) -> String {
+    match lang {
+        Lang::Zh => join_lines(lines),
+        Lang::En => join_lines_en(lines),
+    }
+}
+
+/// Does a short OCR line look like an English speaker name shown above the
+/// dialogue line ("Jiyan", "Black Shores Researcher")? Title-case words, no
+/// sentence punctuation, at most 4 words.
+pub fn looks_like_name_en(s: &str) -> bool {
+    let s = s.trim();
+    let words: Vec<&str> = s.split_whitespace().collect();
+    if words.is_empty() || words.len() > 4 || s.chars().count() > 32 {
+        return false;
+    }
+    if s.chars().any(|c| matches!(c, '.' | ',' | '!' | '?' | ';' | ':' | '"' | '…') || c.is_ascii_digit()) {
+        return false;
+    }
+    let small = ["of", "the", "de", "von", "a"];
+    words.iter().all(|w| {
+        w.chars().next().map_or(false, |c| c.is_uppercase()) || small.contains(&w.to_lowercase().as_str())
+    }) && words[0].chars().next().map_or(false, |c| c.is_uppercase())
+}
+
 /// Join several OCR lines of one subtitle block.
 /// Chinese lines are concatenated without a separator; Latin ones with a space.
 pub fn join_lines<S: AsRef<str>>(lines: &[S]) -> String {
@@ -165,7 +254,12 @@ pub fn split_speaker(s: &str) -> (Option<&str>, &str) {
         if let Some(pos) = s.find(sep) {
             let name = &s[..pos];
             let n = name.chars().count();
-            if (1..=8).contains(&n) && !name.chars().any(|c| is_cjk_punct(c) || c.is_ascii_punctuation()) {
+            let ok = if has_han(name) {
+                (1..=8).contains(&n) && !name.chars().any(|c| is_cjk_punct(c) || c.is_ascii_punctuation())
+            } else {
+                looks_like_name_en(name)
+            };
+            if ok {
                 let rest = s[pos + sep.len_utf8()..].trim_start();
                 if !rest.is_empty() {
                     return (Some(name), rest);
@@ -250,6 +344,21 @@ mod tests {
         assert_eq!(split_speaker("沈七：你终于来了。"), (Some("沈七"), "你终于来了。"));
         assert_eq!(split_speaker("他说：好，走吧。"), (Some("他说"), "好，走吧。"));
         assert_eq!(split_speaker("你好，世界：不"), (None, "你好，世界：不"));
+    }
+
+    #[test]
+    fn english_lines() {
+        assert_eq!(normalize_line_en("| We should go , Rover !  _"), "We should go, Rover!");
+        assert_eq!(normalize_line_en("“Don’t worry.”"), "\"Don't worry.\"");
+        assert_eq!(normalize_line_en("- Wait..."), "Wait...");
+        assert_eq!(join_lines_en(&["The resonance is unsta-", "ble here.", "Be careful."]), "The resonance is unstable here. Be careful.");
+        assert_eq!(join_lines_en(&["Black Shores", "-"]), "Black Shores");
+        assert!(looks_like_name_en("Jiyan"));
+        assert!(looks_like_name_en("Black Shores Researcher"));
+        assert!(!looks_like_name_en("Wait for me."));
+        assert!(!looks_like_name_en("we go now"));
+        assert_eq!(split_speaker("Jiyan: The frontline needs us."), (Some("Jiyan"), "The frontline needs us."));
+        assert_eq!(split_speaker("Remember this: never give up."), (None, "Remember this: never give up."));
     }
 
     #[test]

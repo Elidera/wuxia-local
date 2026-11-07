@@ -9,6 +9,7 @@
 //! * A user-defined template can override both (see [`render_custom`]).
 
 use crate::glossary::Term;
+use crate::lang::{self, Lang};
 use crate::text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +76,50 @@ fn hymt_terms(terms: &[&Term]) -> String {
     s
 }
 
+fn src_lang(s: &str) -> Lang {
+    lang::detect(s).unwrap_or(Lang::Zh)
+}
+
+const HYMT_EN_STYLE_DIALOGUE: &str = "natural, expressive Russian of a fantasy RPG; spoken dialogue";
+const HYMT_EN_STYLE_INTERFACE: &str = "concise video game interface text";
+
+fn hymt_terms_en(terms: &[&Term]) -> String {
+    if terms.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("Reference the following translations:\n");
+    for t in terms {
+        s.push_str(&format!("{} translates to {}\n", t.src, t.dst));
+    }
+    s.push('\n');
+    s
+}
+
+fn build_hymt_en(inp: &PromptInput) -> Vec<Message> {
+    let style = match inp.kind {
+        TextKind::Dialogue => HYMT_EN_STYLE_DIALOGUE,
+        TextKind::Interface | TextKind::Name => HYMT_EN_STYLE_INTERFACE,
+    };
+    let mut p = hymt_terms_en(&inp.terms);
+    if inp.kind == TextKind::Dialogue && !inp.context_src.is_empty() {
+        p.push_str("[Background Information]\n");
+        p.push_str(&inp.context_src);
+        p.push_str("\n\nPlease translate the following text into Russian, taking the provided background information into account. \
+Do not translate the background information. ");
+    } else {
+        p.push_str("Please translate the following text into Russian. ");
+    }
+    p.push_str(&format!(
+        "Note that the translation style must strictly conform to [{style}]. Only output the translated result without any additional explanation:\n\n"
+    ));
+    p.push_str(inp.source);
+    vec![Message { role: "user", content: p }]
+}
+
 fn build_hymt(inp: &PromptInput) -> Vec<Message> {
+    if src_lang(inp.source) == Lang::En {
+        return build_hymt_en(inp);
+    }
     let style = match inp.kind {
         TextKind::Dialogue => HYMT_STYLE_DIALOGUE,
         TextKind::Interface | TextKind::Name => HYMT_STYLE_INTERFACE,
@@ -95,7 +139,36 @@ fn build_hymt(inp: &PromptInput) -> Vec<Message> {
     vec![Message { role: "user", content: p }]
 }
 
+fn instruct_system_en(inp: &PromptInput) -> String {
+    let mut s = format!(
+        "Ты — профессиональный переводчик видеоигр с английского языка на русский. \
+Переводишь текст из игры «{game}».\n\
+Правила:\n\
+1. Точно передавай смысл. Ничего не добавляй и не выдумывай.\n\
+2. Пиши естественным живым русским языком, как в хорошей официальной локализации. Сохраняй характер и интонацию персонажа.\n\
+3. Идиомы и игру слов передавай по смыслу, а не дословно.\n\
+4. Имена и названия, которых нет в глоссарии, транскрибируй по-русски (Jinzhou — Цзиньчжоу, Verina — Верина).\n\
+5. Термины из глоссария используй строго в указанном виде, склоняя по правилам русского языка.\n\
+6. Обращение на «ты» или «вы» выбирай по контексту и отношениям персонажей.\n\
+7. Выведи ТОЛЬКО перевод: без кавычек, пояснений и оригинала.",
+        game = inp.game
+    );
+    match inp.kind {
+        TextKind::Interface => s.push_str("\n8. Это надпись интерфейса: переводи кратко, как в официальной локализации; не добавляй точку в конце, если её нет в оригинале."),
+        TextKind::Name => s.push_str("\n8. Это имя или прозвище персонажа: дай только русскую форму имени."),
+        TextKind::Dialogue => {}
+    }
+    if !inp.style_hint.trim().is_empty() {
+        s.push_str("\nДополнительное пожелание к стилю: ");
+        s.push_str(inp.style_hint.trim());
+    }
+    s
+}
+
 fn instruct_system(inp: &PromptInput) -> String {
+    if src_lang(inp.source) == Lang::En {
+        return instruct_system_en(inp);
+    }
     let mut s = format!(
         "Ты — профессиональный литературный переводчик китайских игр жанра уся на русский язык. \
 Переводишь текст из игры «{game}».\n\
@@ -183,7 +256,19 @@ pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &s
     let n = items.len();
     // Numbered so a dropped or merged item does not shift all the others.
     let joined = items.iter().enumerate().map(|(i, s)| format!("[{}]{s}", i + 1)).collect::<Vec<_>>().join(BATCH_SEP);
+    let all: String = items.concat();
+    let en = src_lang(&all) == Lang::En;
     match style {
+        PromptStyle::HyMt if en => {
+            let mut p = hymt_terms_en(terms);
+            p.push_str(&format!(
+                "Please accurately translate the following text into Russian. You must retain the exact same number of delimiters in the translation. \
+                 The text consists of {n} separate video game interface labels separated by \"{BATCH_SEP}\", each prefixed with its number [1], [2]... \
+                 Keep the numbers and translate each label separately. Only output the translated result without any additional explanation:\n"
+            ));
+            p.push_str(&joined);
+            vec![Message { role: "user", content: p }]
+        }
         PromptStyle::HyMt => {
             let mut p = hymt_terms(terms);
             p.push_str(&format!(
@@ -196,7 +281,7 @@ pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &s
         }
         PromptStyle::Instruct => {
             let dummy = PromptInput {
-                source: "",
+                source: if en { "text" } else { "文" },
                 kind: TextKind::Interface,
                 terms: vec![],
                 context_src: String::new(),
@@ -297,7 +382,7 @@ fn strip_think(s: &str) -> String {
     out
 }
 
-const PREFIXES: &[&str] = &["перевод:", "перевод на русский:", "translation:", "译文：", "译文:", "русский:", "ответ:"];
+const PREFIXES: &[&str] = &["перевод:", "перевод на русский:", "translation:", "russian:", "译文：", "译文:", "русский:", "ответ:"];
 
 /// Turn raw model output into a displayable translation, or reject it.
 pub fn clean_output(raw: &str, source: &str) -> Result<String, Reject> {
@@ -347,6 +432,11 @@ pub fn clean_output(raw: &str, source: &str) -> Result<String, Reject> {
     if text::han_ratio(s) > 0.3 {
         return Err(Reject::NotTranslated);
     }
+    // English source: the answer must be mostly Cyrillic (names may stay Latin).
+    let lat = lang::latin_count(s);
+    if lat >= 6 && lang::cyrillic_count(s) * 2 < lat && lang::detect(source) == Some(Lang::En) {
+        return Err(Reject::NotTranslated);
+    }
     // Russian is ~2–4× longer in chars than Chinese; allow generous slack.
     let limit = 40 + source.chars().count() * 8;
     if s.chars().count() > limit {
@@ -381,6 +471,32 @@ mod tests {
         assert!(c.starts_with("参考下面的翻译：\n开封 翻译成 Кайфэн\n"));
         assert!(c.contains("少侠，你醒了？\n参考上面的信息"));
         assert!(c.ends_with("\n我们去开封。"));
+    }
+
+    #[test]
+    fn english_source() {
+        let t = term("Rover", "Скиталец");
+        let inp = PromptInput {
+            source: "Rover, we need to reach Jinzhou.",
+            kind: TextKind::Dialogue,
+            terms: vec![&t],
+            context_src: "Where are we?".into(),
+            context_pairs: "Where are we? → Где мы?".into(),
+            game: "Wuthering Waves",
+            style_hint: "",
+        };
+        let m = build(PromptStyle::HyMt, &inp);
+        let c = &m[0].content;
+        assert!(c.starts_with("Reference the following translations:\nRover translates to Скиталец\n"));
+        assert!(c.contains("[Background Information]\nWhere are we?"));
+        assert!(c.ends_with("\n\nRover, we need to reach Jinzhou."));
+        let m = build(PromptStyle::Instruct, &inp);
+        assert!(m[0].content.contains("с английского"));
+        let b = build_batch(PromptStyle::HyMt, &["Inventory", "Quests"], &[], "G");
+        assert!(b[0].content.contains("same number of delimiters"));
+        // Untranslated English answer is rejected; Russian with a Latin name passes.
+        assert_eq!(clean_output("Rover, we need to go.", "Rover, we need to go."), Err(Reject::NotTranslated));
+        assert_eq!(clean_output("Rover, нам нужно идти.", "Rover, we need to go.").unwrap(), "Rover, нам нужно идти.");
     }
 
     #[test]

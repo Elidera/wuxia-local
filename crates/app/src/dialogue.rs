@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use wuxia_core::detect::{Event, Fingerprint, TextColor, WatchConfig, Watcher};
 use wuxia_core::prompt::TextKind;
-use wuxia_core::{similarity, text};
+use wuxia_core::{lang, similarity, text};
 
 fn watch_cfg(c: &crate::config::Dialogue) -> WatchConfig {
     WatchConfig {
@@ -49,14 +49,8 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         if !on || selecting {
             continue;
         }
-        if cfg.general.pause_when_unfocused && !(cfg.general.window_match.is_empty() && cfg.general.process_match.is_empty()) {
-            let exe = win::foreground_process_name();
-            let focused = if !cfg.general.process_match.is_empty() {
-                exe == cfg.general.process_match.to_lowercase()
-            } else {
-                !win::NOT_GAME.contains(&exe.as_str())
-                    && win::foreground_title().to_lowercase().contains(&cfg.general.window_match.to_lowercase())
-            };
+        if cfg.general.pause_when_unfocused && !cfg.general.window_match.trim().is_empty() {
+            let focused = win::game_in_foreground(&cfg.general.window_match);
             let was = shared.ui.lock().unwrap().paused_unfocused;
             if focused == was {
                 shared.ui(|u| u.paused_unfocused = !focused);
@@ -95,7 +89,8 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 let t0 = Instant::now();
                 let pre = if cfg.dialogue.preprocess == "contrast" { frame.contrast_gray() } else { frame };
                 let debug_frame = shared.ui.lock().unwrap().panel_open.then(|| std::sync::Arc::new(pre.clone()));
-                let lines = match ocr.recognize(pre, cfg.dialogue.upscale).await {
+                let lang = cfg.source_lang();
+                let lines = match ocr.recognize(pre, cfg.dialogue.upscale, lang).await {
                     Ok(l) => l,
                     Err(e) => {
                         shared.ui(|u| u.notice(format!("OCR: {e}")));
@@ -104,7 +99,7 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 };
                 let ocr_ms = t0.elapsed().as_millis();
                 let raw_text: String = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" / ");
-                let txt = tr.fix_ocr(&ocr::subtitle_text(lines));
+                let txt = tr.fix_ocr(&ocr::subtitle_text(lines, lang));
                 shared.ui(|u| {
                     u.stats.add_ocr(ocr_ms);
                     if let Some(f) = debug_frame {
@@ -112,8 +107,8 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                         u.ocr_debug = Some(crate::state::OcrDebug { frame: f, text: raw_text, ms: ocr_ms, id });
                     }
                 });
-                // Chinese OCR turns other scripts into Latin garbage: require real Chinese text.
-                if text::han_count(&txt) < 2 || text::han_ratio(&txt) < 0.4 {
+                // OCR turns other scripts and icons into garbage: require real text in the game language.
+                if !lang::is_subtitle(&txt, lang) {
                     continue;
                 }
                 let growing = similarity::is_growing(&last_text, &txt);

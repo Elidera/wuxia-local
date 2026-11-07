@@ -59,12 +59,23 @@ fn append(path: &std::path::Path, line: &str) {
     }
 }
 
-pub fn load_glossary(paths: &Paths) -> Glossary {
+/// Bundled and user glossaries. A file named `<profile>_*.tsv` (e.g. `wuwa_terms.tsv`)
+/// belongs to that game and is loaded only when the game is selected.
+pub fn load_glossary(paths: &Paths, profile: &str) -> Glossary {
     let mut g = Glossary::new();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for dir in [paths.bundled_glossary_dir(), paths.user_glossary_dir()] {
         let mut v: Vec<_> = std::fs::read_dir(&dir)
-            .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().map_or(false, |e| e == "tsv")).collect())
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map_or(false, |e| e == "tsv"))
+                    .filter(|p| {
+                        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                        crate::config::PROFILES.iter().all(|g| g.id == profile || !stem.starts_with(&format!("{}_", g.id)))
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         v.sort(); // deterministic; user dir comes last and overrides
         files.extend(v);
@@ -91,7 +102,7 @@ pub fn load_fixes(paths: &Paths) -> Fixes {
 }
 
 impl Translator {
-    pub fn new(paths: Paths, client: LlmClient, context_lines: usize) -> Self {
+    pub fn new(paths: Paths, client: LlmClient, context_lines: usize, profile: &str) -> Self {
         let mut cache = Store::new();
         if let Ok(s) = std::fs::read_to_string(paths.cache()) {
             let n = cache.load_tsv(&s);
@@ -107,7 +118,9 @@ impl Translator {
         if !paths.user_glossary().exists() {
             let _ = std::fs::write(
                 paths.user_glossary(),
-                "# Ваш глоссарий: китайский<TAB>русский<TAB>заметка. Перекрывает встроенный.\n# Пример:\n# 沈七\tШэнь Ци\tимя\n",
+                "# Ваш глоссарий: оригинал<TAB>русский<TAB>заметка. Перекрывает встроенный.\n\
+                 # Оригинал может быть китайским или английским (английский — без учёта регистра).\n\
+                 # Примеры:\n# 沈七\tШэнь Ци\tимя\n# Rover\tСкиталец\tгерой\n",
             );
         }
         if !paths.fixes().exists() {
@@ -122,7 +135,7 @@ impl Translator {
             );
         }
         let fixes = load_fixes(&paths);
-        let glossary = load_glossary(&paths);
+        let glossary = load_glossary(&paths, profile);
         tracing::info!("кэш: {} · исправления: {} · глоссарий: {}", cache.len(), corrections.len(), glossary.len());
         Self {
             paths,
@@ -137,8 +150,8 @@ impl Translator {
     }
 
     /// Re-read glossaries and fixes. Returns (terms, fix rules).
-    pub fn reload_dictionaries(&self) -> (usize, usize) {
-        let g = load_glossary(&self.paths);
+    pub fn reload_dictionaries(&self, profile: &str) -> (usize, usize) {
+        let g = load_glossary(&self.paths, profile);
         let f = load_fixes(&self.paths);
         let n = (g.len(), f.len());
         *self.glossary.lock().unwrap() = g;

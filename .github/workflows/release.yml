@@ -44,7 +44,12 @@ jobs:
         run: cargo clippy -p wuxia-local --release -- -D clippy::correctness
 
       - name: Build
-        run: cargo build -p wuxia-local --release
+        shell: pwsh
+        run: |
+          # Build date (Moscow time) and commit, shown in the panel and the log.
+          $msk = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date).ToUniversalTime(), 'Russian Standard Time')
+          $env:WUXIA_BUILD = "$($msk.ToString('dd.MM.yyyy HH:mm')) · $($env:GITHUB_SHA.Substring(0,7))"
+          cargo build -p wuxia-local --release
 
       - name: Download llama.cpp (Vulkan + CPU)
         shell: pwsh
