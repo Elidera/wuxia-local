@@ -50,7 +50,8 @@ jobs:
         shell: pwsh
         run: |
           $tag = $env:LLAMA_TAG
-          if ([string]::IsNullOrEmpty($tag)) { $tag = (gh release view --repo ggml-org/llama.cpp --json tagName -q .tagName) }
+          # Newest regular build (tags like b12017); the repo's "latest" may be a release without Windows binaries.
+          if ([string]::IsNullOrEmpty($tag)) { $tag = (gh api "repos/ggml-org/llama.cpp/releases?per_page=30" --jq '[.[] | select(.tag_name | test("^b[0-9]+$"))][0].tag_name') }
           Write-Host "llama.cpp $tag"
           New-Item -ItemType Directory -Force dist/llama-vulkan, dist/llama-cpu | Out-Null
           gh release download $tag --repo ggml-org/llama.cpp --pattern "*bin-win-vulkan-x64.zip" --dir dl
