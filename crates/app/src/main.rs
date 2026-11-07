@@ -150,8 +150,6 @@ mod app {
             shared.ui(|u| u.panel_open = true);
         }
 
-        let (sw, sh) = win::screen_size();
-        let scale = win::system_scale();
         let options = eframe::NativeOptions {
             viewport: eframe::egui::ViewportBuilder::default()
                 .with_title(ui::OVERLAY_TITLE)
@@ -162,7 +160,9 @@ mod app {
                 .with_taskbar(false)
                 .with_resizable(false)
                 .with_position([0.0, 0.0])
-                .with_inner_size([sw as f32 / scale, sh as f32 / scale]),
+                // Starts as a 1×1 window; ui.rs expands it to full screen once it renders
+                // transparently, so the screen never flashes black.
+                .with_inner_size([1.0, 1.0]),
             renderer: eframe::Renderer::Glow,
             vsync: true,
             ..Default::default()

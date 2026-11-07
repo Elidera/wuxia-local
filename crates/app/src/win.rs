@@ -7,10 +7,10 @@ use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-use windows::Win32::UI::HiDpi::{GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, SetWindowDisplayAffinity,
-    SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 /// Make the process per-monitor DPI aware so all coordinates are physical pixels.
@@ -19,10 +19,6 @@ pub fn set_dpi_aware() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
-}
-
-pub fn system_scale() -> f32 {
-    unsafe { GetDpiForSystem() as f32 / 96.0 }
 }
 
 /// Primary screen size in physical pixels.
@@ -52,23 +48,19 @@ pub fn find_window(title: &str) -> Option<isize> {
     }
 }
 
-/// Exclude a window from every screen capture (incl. our own), Windows 10 2004+.
-/// Also mark it as a tool window that never takes focus from the game.
-pub fn protect_overlay(hwnd: isize, no_activate: bool) -> bool {
+/// Mark the overlay as a tool window that never takes focus from the game.
+pub fn make_tool_window(hwnd: isize) {
     unsafe {
         let h = HWND(hwnd as *mut _);
-        let ok = SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE).is_ok();
-        if no_activate {
-            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-            SetWindowLongPtrW(h, GWL_EXSTYLE, ex | (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) as isize);
-        }
-        ok
+        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        SetWindowLongPtrW(h, GWL_EXSTYLE, ex | (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) as isize);
     }
 }
 
-/// Exclude a window from capture without changing its style (control panel).
-pub fn exclude_from_capture(hwnd: isize) -> bool {
-    unsafe { SetWindowDisplayAffinity(HWND(hwnd as *mut _), WDA_EXCLUDEFROMCAPTURE).is_ok() }
+/// Make a window visible to / hidden from screen capture (screenshots, OBS, our OCR).
+pub fn set_capture_visible(hwnd: isize, visible: bool) -> bool {
+    let mode = if visible { WDA_NONE } else { WDA_EXCLUDEFROMCAPTURE };
+    unsafe { SetWindowDisplayAffinity(HWND(hwnd as *mut _), mode).is_ok() }
 }
 
 /// Put a child process into a job that kills it when we exit (even on crash),

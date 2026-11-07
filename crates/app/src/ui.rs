@@ -20,8 +20,12 @@ pub const PANEL_TITLE: &str = "Wuxia Local — панель";
 
 pub struct WuxiaApp {
     shared: Arc<Shared>,
-    overlay_protected: bool,
-    panel_protected: bool,
+    overlay_hwnd: Option<isize>,
+    panel_hwnd: Option<isize>,
+    /// Capture visibility currently applied to (overlay, panel).
+    applied_visibility: (Option<bool>, Option<bool>),
+    /// Frames rendered while hidden; the overlay is shown only once it is transparent.
+    frames: u32,
     passthrough: bool,
     drag_start: Option<Pos2>,
     edits: HashMap<String, String>,
@@ -68,8 +72,10 @@ impl WuxiaApp {
         let _ = shared.egui.set(cc.egui_ctx.clone());
         Self {
             shared,
-            overlay_protected: false,
-            panel_protected: false,
+            overlay_hwnd: None,
+            panel_hwnd: None,
+            applied_visibility: (None, None),
+            frames: 0,
             passthrough: true,
             drag_start: None,
             edits: HashMap::new(),
@@ -103,27 +109,36 @@ impl eframe::App for WuxiaApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // One-time window setup.
-        if !self.sized {
-            let (sw, sh) = win::screen_size();
-            let ppp = ctx.pixels_per_point();
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
-            ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(sw as f32 / ppp, sh as f32 / ppp)));
-            self.sized = true;
-        }
-        if !self.overlay_protected {
-            if let Some(h) = win::find_window(OVERLAY_TITLE) {
-                self.overlay_protected = win::protect_overlay(h, true);
-                if !self.overlay_protected {
-                    self.shared.ui(|u| u.notice("Не удалось исключить оверлей из захвата (нужна Windows 10 2004+)"));
-                    self.overlay_protected = true;
-                }
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(200));
+        if self.overlay_hwnd.is_none() {
+            self.overlay_hwnd = win::find_window(OVERLAY_TITLE);
+            if let Some(h) = self.overlay_hwnd {
+                win::make_tool_window(h);
             }
+        }
+        // The window starts at 1×1 px: a freshly created GL window is black until the
+        // compositor picks up transparency. Expand to full screen after a few clear frames.
+        if !self.sized {
+            self.frames += 1;
+            if self.frames >= 4 && self.overlay_hwnd.is_some() {
+                let (sw, sh) = win::screen_size();
+                let ppp = ctx.pixels_per_point();
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(sw as f32 / ppp, sh as f32 / ppp)));
+                self.sized = true;
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
         }
 
         let cfg = self.shared.cfg();
+        let want_visible = cfg.general.visible_in_screenshots;
+        if let Some(h) = self.overlay_hwnd {
+            if self.applied_visibility.0 != Some(want_visible) {
+                if !win::set_capture_visible(h, want_visible) && !want_visible {
+                    self.shared.ui(|u| u.notice("Не удалось исключить оверлей из захвата (нужна Windows 10 2004+)"));
+                }
+                self.applied_visibility.0 = Some(want_visible);
+            }
+        }
         let (dialogue, interface, show_original, selecting, panel_open, server, paused, dialogue_on) = {
             let u = self.shared.ui.lock().unwrap();
             (
@@ -358,14 +373,19 @@ impl WuxiaApp {
                 });
             },
         );
-        if protect_now && !self.panel_protected {
-            if let Some(h) = win::find_window(PANEL_TITLE) {
-                win::exclude_from_capture(h);
-                self.panel_protected = true;
+        if protect_now && self.panel_hwnd.is_none() {
+            self.panel_hwnd = win::find_window(PANEL_TITLE);
+        }
+        if let Some(h) = self.panel_hwnd {
+            let want = self.shared.cfg().general.visible_in_screenshots;
+            if self.applied_visibility.1 != Some(want) {
+                win::set_capture_visible(h, want);
+                self.applied_visibility.1 = Some(want);
             }
         }
         if !self.shared.ui.lock().unwrap().panel_open {
-            self.panel_protected = false;
+            self.panel_hwnd = None;
+            self.applied_visibility.1 = None;
         }
         if dirty {
             self.cfg_dirty_since = Some(Instant::now());
@@ -498,6 +518,13 @@ fn panel_contents(ui: &mut egui::Ui, shared: &Arc<Shared>, edits: &mut HashMap<S
     }
 
     ui.separator();
+    {
+        let mut c = shared.cfg.write().unwrap();
+        dirty |= ui
+            .checkbox(&mut c.general.visible_in_screenshots, "Показывать перевод и панель на скриншотах (Win+Shift+S, OBS)")
+            .on_hover_text("Выключено по умолчанию, чтобы программа не распознавала собственный перевод. Включайте, чтобы сделать скриншот.")
+            .changed();
+    }
     ui.horizontal_wrapped(|ui| {
         if ui.button("Открыть глоссарий").clicked() {
             shared.send(Command::Open(shared.paths.user_glossary()));

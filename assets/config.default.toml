@@ -7,6 +7,9 @@ game_title = "Where Winds Meet (燕云十六声)"
 # Часть заголовка окна игры. Пока активно другое окно, захват на паузе (экономит CPU).
 window_match = "Where Winds Meet"
 pause_when_unfocused = true
+# Показывать перевод и панель на скриншотах (для отладки). При включении перевод
+# теоретически может попасть в собственный OCR, если наложен на область субтитров.
+visible_in_screenshots = false
 
 [llm]
 # managed — программа сама запускает llama-server.exe;
