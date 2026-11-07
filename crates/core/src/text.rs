@@ -142,7 +142,21 @@ pub fn join_lines<S: AsRef<str>>(lines: &[S]) -> String {
         }
         out.push_str(&l);
     }
-    out
+    trim_trailing_garbage(&out)
+}
+
+/// Drop short OCR garbage after the last sentence-final mark
+/// (box borders, icons read as letters): `你来了。Il` → `你来了。`.
+pub fn trim_trailing_garbage(s: &str) -> String {
+    let finals = ['。', '！', '？', '…', '」', '”', '』', '）'];
+    if let Some((idx, ch)) = s.char_indices().filter(|(_, c)| finals.contains(c)).last() {
+        let tail = &s[idx + ch.len_utf8()..];
+        let n = tail.chars().count();
+        if n > 0 && n <= 3 && !tail.chars().any(is_han) {
+            return s[..idx + ch.len_utf8()].to_string();
+        }
+    }
+    s.to_string()
 }
 
 /// Split a `Speaker：line` subtitle if the prefix looks like a name (short, no punctuation).
@@ -221,6 +235,14 @@ mod tests {
     fn joins_two_line_subtitle() {
         assert_eq!(join_lines(&["此去开封", "路途遥远"]), "此去开封路途遥远");
         assert_eq!(join_lines(&["Press", "F to talk"]), "Press F to talk");
+    }
+
+    #[test]
+    fn trailing_garbage() {
+        assert_eq!(trim_trailing_garbage("你来了。Il"), "你来了。");
+        assert_eq!(trim_trailing_garbage("你来了。好"), "你来了。好");
+        assert_eq!(trim_trailing_garbage("你来了"), "你来了");
+        assert_eq!(join_lines(&["你终于来了！", "lI"]), "你终于来了！");
     }
 
     #[test]

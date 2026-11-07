@@ -9,7 +9,7 @@ on:
       models:
         description: "Models to test (comma separated ids: hymt2-1.8b, qwen3.5-2b, hymt2-7b)"
         required: false
-        default: "hymt2-1.8b,qwen3.5-2b"
+        default: "hymt2-1.8b"
   push:
     branches: [main]
     paths:
@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
-      MODELS: ${{ github.event.inputs.models || 'hymt2-1.8b,qwen3.5-2b' }}
+      MODELS: ${{ github.event.inputs.models || 'hymt2-1.8b' }}
       LLAMA_CACHE: ${{ github.workspace }}/models
     steps:
       - uses: actions/checkout@v4

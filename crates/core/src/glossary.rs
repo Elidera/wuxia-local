@@ -110,9 +110,18 @@ impl Glossary {
         self.find_in(src, 64)
             .into_iter()
             .filter(|t| {
-                // Compare by the stem of the first word: Russian inflects nouns.
+                // Russian inflects: compare word stems. The term counts as used if the
+                // stem of its longest word is present (skips pronouns like «ваша»).
                 let want = t.dst.to_lowercase();
-                let word: Vec<char> = want.split_whitespace().next().unwrap_or("").chars().collect();
+                let word: Vec<char> = want
+                    .split(|c: char| !c.is_alphanumeric())
+                    .max_by_key(|w| w.chars().count())
+                    .unwrap_or("")
+                    .chars()
+                    .collect();
+                if word.is_empty() {
+                    return false;
+                }
                 let keep = if word.len() <= 4 { word.len() } else { (word.len() - 2).max(4) };
                 let stem: String = word[..keep].iter().collect();
                 !lower.contains(&stem)
@@ -151,5 +160,8 @@ mod tests {
         let g = g();
         assert!(g.violations("去开封", "Едем в Кайфэне").is_empty());
         assert_eq!(g.violations("去开封", "Едем в столицу").len(), 1);
+        let mut g2 = Glossary::new();
+        g2.load_tsv("阁下\tваша милость\n");
+        assert!(g2.violations("阁下", "прошу вашей милости").is_empty());
     }
 }
