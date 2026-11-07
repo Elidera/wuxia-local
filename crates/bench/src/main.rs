@@ -103,7 +103,12 @@ fn load_glossary(dir: &str, profile: &str) -> Glossary {
     files.sort();
     for f in files {
         if let Ok(s) = std::fs::read_to_string(&f) {
-            g.load_tsv(&s);
+            let ui = f.file_stem().and_then(|s| s.to_str()).map_or(false, |s| s.contains("game_ui"));
+            if ui {
+                g.load_tsv_ui(&s);
+            } else {
+                g.load_tsv(&s);
+            }
         }
     }
     g
@@ -216,7 +221,7 @@ fn main() {
     // Warm-up request so the first line's latency is not dominated by cold start.
     let _ = chat(&agent, &a, &[prompt::Message { role: "user", content: "将以下文本翻译为俄语：你好".into() }]);
     for (i, l) in lines.iter().enumerate() {
-        let terms = g.find_in(l, 24);
+        let terms = g.find_in_dialogue(l, 24);
         let inp = PromptInput {
             source: l,
             kind: TextKind::Dialogue,

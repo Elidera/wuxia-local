@@ -312,8 +312,35 @@ pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &s
 /// Split a numbered batch answer. Each slot is `Some` if that item was found:
 /// by its `[k]` number, or — when the model dropped the numbers — by position
 /// if the count matches exactly.
+/// Models sometimes write the separator with extra bars ("|||||"): squeeze any
+/// run of 3+ bars into exactly one separator.
+fn squeeze_seps(s: &str) -> String {
+    let s = s.replace("｜｜｜", BATCH_SEP).replace("| | |", BATCH_SEP);
+    let mut out = String::with_capacity(s.len());
+    let mut run = 0;
+    for c in s.chars() {
+        if c == '|' {
+            run += 1;
+            continue;
+        }
+        if run >= 3 {
+            out.push_str(BATCH_SEP);
+        } else {
+            out.extend(std::iter::repeat('|').take(run));
+        }
+        run = 0;
+        out.push(c);
+    }
+    if run >= 3 {
+        out.push_str(BATCH_SEP);
+    } else {
+        out.extend(std::iter::repeat('|').take(run));
+    }
+    out
+}
+
 pub fn parse_batch_indexed(raw: &str, n: usize) -> Vec<Option<String>> {
-    let s = strip_think(raw).replace("｜｜｜", BATCH_SEP).replace("| | |", BATCH_SEP);
+    let s = squeeze_seps(&strip_think(raw));
     let mut s = s.trim();
     for p in PREFIXES {
         if s.to_lowercase().starts_with(p) {
@@ -543,6 +570,11 @@ mod tests {
         // Numbers dropped but the count matches: by position.
         assert_eq!(parse_batch_indexed("А|||Б", 2), vec![Some("А".to_string()), Some("Б".to_string())]);
         assert_eq!(parse_batch_indexed("А|||Б", 3), vec![None, None, None]);
+        // Extra bars in the separator (seen with Hy-MT2 on English labels).
+        assert_eq!(
+            parse_batch_indexed("[1]Инвентарь|||||[2]Почта||||[3]Отмена", 3),
+            vec![Some("Инвентарь".to_string()), Some("Почта".to_string()), Some("Отмена".to_string())]
+        );
         assert!(m[0].content.starts_with("参考下面的翻译"));
         let m = build_batch(PromptStyle::Instruct, &["背包", "任务"], &[], "G");
         assert_eq!(m[0].role, "system");

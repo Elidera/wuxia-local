@@ -6,7 +6,7 @@
 //! so a user glossary can override the bundled one.
 
 use crate::tsv;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Term {
@@ -22,6 +22,9 @@ pub struct Glossary {
     terms: Vec<Term>,
     /// Distinct term lengths in chars, longest first (for longest-match scan).
     lengths: Vec<usize>,
+    /// Terms from interface dictionaries (`*game_ui*.tsv`): short common words
+    /// ("Back", "Map") that are right for menu labels but noise in dialogue.
+    ui_only: HashSet<usize>,
 }
 
 impl Glossary {
@@ -47,6 +50,7 @@ impl Glossary {
         let key = key_of(src);
         if let Some(&i) = self.index.get(&key) {
             self.terms[i] = t;
+            self.ui_only.remove(&i);
         } else {
             self.index.insert(key, self.terms.len());
             self.terms.push(t);
@@ -70,6 +74,27 @@ impl Glossary {
         n
     }
 
+    /// Merge an interface dictionary: its terms are used for labels and screen
+    /// translation, but not suggested to the model for dialogue lines.
+    pub fn load_tsv_ui(&mut self, content: &str) -> usize {
+        let mut n = 0;
+        for row in tsv::parse(content) {
+            if row.len() >= 2 {
+                self.insert(&row[0], &row[1], row.get(2).map(String::as_str).unwrap_or(""));
+                if let Some(&i) = self.index.get(&key_of(row[0].trim())) {
+                    self.ui_only.insert(i);
+                }
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Like [`find_in`](Self::find_in) but without interface-only terms (for dialogue).
+    pub fn find_in_dialogue(&self, text: &str, limit: usize) -> Vec<&Term> {
+        self.find_impl(text, limit, true)
+    }
+
     /// Exact lookup (used for short UI labels: whole string is a known term).
     pub fn exact(&self, s: &str) -> Option<&Term> {
         self.index.get(&key_of(s.trim())).map(|&i| &self.terms[i])
@@ -80,6 +105,10 @@ impl Glossary {
     /// Latin terms match case-insensitively and only as whole words
     /// (an English plural "-s"/"-es" is allowed: "Echoes" finds "Echo").
     pub fn find_in(&self, text: &str, limit: usize) -> Vec<&Term> {
+        self.find_impl(text, limit, false)
+    }
+
+    fn find_impl(&self, text: &str, limit: usize, skip_ui: bool) -> Vec<&Term> {
         let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
         let mut found: Vec<usize> = Vec::new();
         let mut i = 0;
@@ -110,7 +139,7 @@ impl Glossary {
                             end += suf;
                         }
                     }
-                    if !found.contains(&idx) {
+                    if !found.contains(&idx) && !(skip_ui && self.ui_only.contains(&idx)) {
                         found.push(idx);
                     }
                     i = end;
@@ -130,7 +159,7 @@ impl Glossary {
     /// whose required rendering is missing from the output. Used for logging/bench.
     pub fn violations<'a>(&'a self, src: &str, out: &str) -> Vec<&'a Term> {
         let lower = out.to_lowercase();
-        self.find_in(src, 64)
+        self.find_impl(src, 64, true)
             .into_iter()
             .filter(|t| {
                 // Russian inflects: compare word stems. The term counts as used if the
@@ -192,6 +221,16 @@ mod tests {
         // Not inside other words.
         assert!(g.find_in("Echolocation and Roverbot", 10).is_empty());
         assert_eq!(g.exact(" echo ").unwrap().dst, "Эхо");
+    }
+
+    #[test]
+    fn ui_terms_not_in_dialogue() {
+        let mut g = Glossary::new();
+        g.load_tsv("Rover\tСкиталец\n");
+        g.load_tsv_ui("Back\tНазад\nMap\tКарта\n");
+        assert_eq!(g.find_in_dialogue("Rover, come back to the map!", 8).len(), 1);
+        assert_eq!(g.find_in("Rover, come back to the map!", 8).len(), 3);
+        assert_eq!(g.exact("Back").unwrap().dst, "Назад");
     }
 
     #[test]

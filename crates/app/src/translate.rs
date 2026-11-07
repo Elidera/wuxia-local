@@ -83,7 +83,8 @@ pub fn load_glossary(paths: &Paths, profile: &str) -> Glossary {
     for f in files {
         match std::fs::read_to_string(&f) {
             Ok(s) => {
-                let n = g.load_tsv(&s);
+                let ui = f.file_stem().and_then(|s| s.to_str()).map_or(false, |s| s.contains("game_ui"));
+                let n = if ui { g.load_tsv_ui(&s) } else { g.load_tsv(&s) };
                 tracing::info!("глоссарий {}: {n} терминов", f.display());
             }
             Err(e) => tracing::warn!("глоссарий {}: {e}", f.display()),
@@ -244,7 +245,7 @@ impl Translator {
             let inp = PromptInput {
                 source: src,
                 kind,
-                terms: g.find_in(src, 24),
+                terms: if kind == TextKind::Dialogue { g.find_in_dialogue(src, 24) } else { g.find_in(src, 24) },
                 context_src: ctx_src,
                 context_pairs: ctx_pairs,
                 game,
