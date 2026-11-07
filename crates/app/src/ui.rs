@@ -160,10 +160,11 @@ impl eframe::App for WuxiaApp {
                 }
             }
         }
-        let (dialogue, interface, show_original, selecting, panel_open, server, paused, dialogue_on) = {
+        let (dialogue, auto_lines, interface, show_original, selecting, panel_open, server, paused, dialogue_on) = {
             let u = self.shared.ui.lock().unwrap();
             (
                 u.dialogue.clone(),
+                u.auto_lines.clone(),
                 u.interface.clone(),
                 u.show_original,
                 u.selecting_region,
@@ -186,8 +187,10 @@ impl eframe::App for WuxiaApp {
             if let Some(view) = &interface {
                 painted.extend(draw_interface(ctx, &painter, view, &cfg, show_original));
             }
-            if let Some(d) = &dialogue {
-                if interface.is_none() {
+            if interface.is_none() {
+                if cfg.dialogue.mode == "auto" {
+                    painted.extend(draw_auto(ctx, &painter, &auto_lines, &cfg, show_original));
+                } else if let Some(d) = &dialogue {
                     painted.extend(draw_dialogue(ctx, &painter, d, &cfg, show_original));
                 }
             }
@@ -247,7 +250,47 @@ impl eframe::App for WuxiaApp {
 
 fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state::DialogueView, cfg: &Config, show_original: bool) -> Option<Rect> {
     let region = WuxiaApp::region_rect(ctx, cfg);
-    let size = cfg.dialogue.font_size;
+    draw_plate(ctx, painter, d, region, cfg.dialogue.font_size, cfg.dialogue.position.as_str(), cfg, show_original)
+}
+
+/// «Авто» mode: one plate per text found on screen, placed relative to it.
+fn draw_auto(ctx: &egui::Context, painter: &egui::Painter, lines: &[crate::state::AutoLine], cfg: &Config, show_original: bool) -> Vec<Rect> {
+    let ppp = ctx.pixels_per_point();
+    let mut out = Vec::new();
+    for l in lines {
+        if !l.pending && l.translation.is_empty() {
+            continue;
+        }
+        let anchor = Rect::from_min_size(Pos2::new(l.rect.x / ppp, l.rect.y / ppp), Vec2::new(l.rect.w / ppp, l.rect.h / ppp));
+        let d = crate::state::DialogueView {
+            source: l.source.clone(),
+            speaker: l.speaker.clone(),
+            translation: l.translation.clone(),
+            pending: l.pending,
+            error: None,
+            from_cache: false,
+        };
+        // Below the text unless that runs off the screen.
+        let mut pos = cfg.dialogue.position.as_str();
+        if pos == "below" && anchor.bottom() + 60.0 > ctx.screen_rect().bottom() {
+            pos = "above";
+        }
+        out.extend(draw_plate(ctx, painter, &d, anchor, cfg.dialogue.font_size * 0.85, pos, cfg, show_original));
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_plate(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    d: &crate::state::DialogueView,
+    region: Rect,
+    size: f32,
+    position: &str,
+    cfg: &Config,
+    show_original: bool,
+) -> Option<Rect> {
     let body = if show_original {
         d.source.clone()
     } else if !d.translation.is_empty() {
@@ -278,15 +321,16 @@ fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state:
     let plate_w = gsize.x + pad.x * 2.0;
     let plate_h = gsize.y + pad.y * 2.0;
     let cx = region.center().x;
-    let top = match cfg.dialogue.position.as_str() {
+    let top = match position {
         "above" => region.top() - plate_h - 6.0,
         "over" => region.center().y - plate_h / 2.0,
         _ => region.bottom() + 6.0,
     };
     let screen = ctx.screen_rect();
     let top = top.clamp(0.0, (screen.bottom() - plate_h).max(0.0));
-    let plate = Rect::from_min_size(Pos2::new(cx - plate_w / 2.0, top), Vec2::new(plate_w, plate_h));
-    let alpha = if cfg.dialogue.position == "over" { 0.92f32.max(cfg.dialogue.backdrop_opacity) } else { cfg.dialogue.backdrop_opacity };
+    let left = (cx - plate_w / 2.0).clamp(0.0, (screen.right() - plate_w).max(0.0));
+    let plate = Rect::from_min_size(Pos2::new(left, top), Vec2::new(plate_w, plate_h));
+    let alpha = if position == "over" { 0.92f32.max(cfg.dialogue.backdrop_opacity) } else { cfg.dialogue.backdrop_opacity };
     painter.rect_filled(plate, Rounding::same(8.0), Color32::from_black_alpha((alpha.clamp(0.0, 1.0) * 255.0) as u8));
     // The galley is centre-aligned around x=0 when halign=Center.
     let pos = Pos2::new(plate.center().x - gsize.x / 2.0 - galley.rect.min.x, plate.top() + pad.y);

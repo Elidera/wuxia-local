@@ -7,6 +7,8 @@ fn main() {
 }
 
 #[cfg(windows)]
+mod auto;
+#[cfg(windows)]
 mod bench;
 #[cfg(windows)]
 mod capture;
@@ -287,13 +289,15 @@ mod app {
                         let mut c = shared.cfg.write().unwrap();
                         c.dialogue.region = r;
                         c.dialogue.region_set = true;
+                        // Picking a region means "watch only here".
+                        c.dialogue.mode = "region".into();
                     }
                     shared.save_config();
                     shared.reset_watcher.store(true, Ordering::SeqCst);
                     shared.ui(|u| {
                         u.selecting_region = false;
                         u.region_shot = None;
-                        u.notice("Область субтитров сохранена");
+                        u.notice("Область субтитров сохранена. Режим «только область»; вернуть «Авто: весь экран» можно в настройках.");
                     });
                     tracing::info!("новая область субтитров: {r:?}");
                 }

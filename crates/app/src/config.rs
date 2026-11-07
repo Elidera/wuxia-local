@@ -108,6 +108,11 @@ impl Default for ModelPreset {
 #[serde(default)]
 pub struct Dialogue {
     pub enabled: bool,
+    /// "auto": read the whole screen and translate anything that looks like speech;
+    /// "region": watch only the selected subtitle region.
+    pub mode: String,
+    /// How often the whole screen is read in «auto» mode.
+    pub auto_interval_ms: u64,
     /// Subtitle region as fractions of the primary screen: [x, y, w, h].
     pub region: [f32; 4],
     pub interval_ms: u64,
@@ -284,6 +289,8 @@ impl Default for Dialogue {
     fn default() -> Self {
         Self {
             enabled: true,
+            mode: "auto".into(),
+            auto_interval_ms: 500,
             region: [0.18, 0.80, 0.64, 0.12],
             interval_ms: 150,
             text_color: "light".into(),

@@ -452,7 +452,8 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
     // Checklist until everything is ready.
     let model_ok = server.as_ref().map(|s| s.is_ready());
     let ocr_ok = ocr_status.as_ref().map(|r| r.is_ok());
-    let region_ok = cfg.dialogue.region_set;
+    let auto_mode = cfg.dialogue.mode == "auto";
+    let region_ok = auto_mode || cfg.dialogue.region_set;
     if model_ok != Some(true) || ocr_ok != Some(true) || !region_ok {
         card(ui, "Подготовка", |ui| {
             let model_detail = match &server {
@@ -481,7 +482,14 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             };
             check_item(ui, ocr_ok, ocr_title, &ocr_detail);
             ui.horizontal(|ui| {
-                check_item(ui, Some(region_ok), "Область субтитров выбрана", if region_ok { "" } else { "Откройте игру с субтитрами и выберите область" });
+                let (title, detail) = if auto_mode {
+                    ("Текст ищется по всему экрану (авто)", "")
+                } else if region_ok {
+                    ("Область субтитров выбрана", "")
+                } else {
+                    ("Область субтитров выбрана", "Откройте игру с субтитрами и выберите область")
+                };
+                check_item(ui, Some(region_ok), title, detail);
                 if !region_ok {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("Выбрать…").clicked() {
@@ -512,7 +520,7 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
         if big_action(ui, "Оригинал / перевод", sub, &hk.show_original, show_original, w) {
             shared.send(Command::ToggleOriginal);
         }
-        if big_action(ui, "Область субтитров", "Обвести, где появляются субтитры", &hk.select_region, false, w) {
+        if big_action(ui, "Область субтитров", "Необязательно: следить только за полосой субтитров", &hk.select_region, false, w) {
             shared.send(Command::SelectRegion);
         }
     });
@@ -629,8 +637,16 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         c.apply_profile();
     }
 
-    any |= search_card(ui, "Перевод субтитров", "размер шрифта затемнение подложки где показывать перевод поверх над под субтитрами помнить реплик контекста связности диалога отделять имя говорящего реплика пожелание к стилю qwen", |ui| {
+    any |= search_card(ui, "Перевод субтитров", "где искать текст весь экран авто только область субтитров частота чтения экрана нагрузка процессор размер шрифта затемнение подложки где показывать перевод поверх над под субтитрами помнить реплик контекста связности диалога отделять имя говорящего реплика пожелание к стилю qwen", |ui| {
         let d = &mut c.dialogue;
+        dirty |= setting_row(ui, "Где искать текст", "Весь экран (авто) — без выбора области; область — только выделенная полоса субтитров", |ui| {
+            segmented(ui, &mut d.mode, &[("auto", "Весь экран (авто)"), ("region", "Только область")])
+        });
+        if d.mode == "auto" {
+            dirty |= setting_row(ui, "Частота чтения экрана", "Реже — меньше нагрузка на процессор", |ui| {
+                ui.add(egui::Slider::new(&mut d.auto_interval_ms, 250..=2000).suffix(" мс")).changed()
+            });
+        }
         dirty |= setting_row(ui, "Размер шрифта", "", |ui| ui.add(egui::Slider::new(&mut d.font_size, 14.0..=56.0).suffix(" пт")).changed());
         dirty |= setting_row(ui, "Затемнение подложки", "0 — без подложки", |ui| {
             ui.add(egui::Slider::new(&mut d.backdrop_opacity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0} %", v * 100.0))).changed()

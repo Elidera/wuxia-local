@@ -68,6 +68,18 @@ pub struct DialogueView {
     pub from_cache: bool,
 }
 
+/// A speech-like text found anywhere on screen in «Авто» mode, with its translation.
+#[derive(Debug, Clone)]
+pub struct AutoLine {
+    pub id: u64,
+    /// Where the original text is (physical screen pixels).
+    pub rect: Rect,
+    pub source: String,
+    pub speaker: Option<String>,
+    pub translation: String,
+    pub pending: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct InterfaceItem {
     /// Physical screen pixels.
@@ -138,6 +150,8 @@ fn ema(prev: f32, x: f32) -> f32 {
 #[derive(Debug, Default)]
 pub struct UiState {
     pub dialogue: Option<DialogueView>,
+    /// «Авто» mode: translations of texts found anywhere on screen.
+    pub auto_lines: Vec<AutoLine>,
     pub interface: Option<InterfaceView>,
     pub dialogue_on: bool,
     pub show_original: bool,

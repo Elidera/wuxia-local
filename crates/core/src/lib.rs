@@ -11,6 +11,7 @@ pub mod glossary;
 pub mod history;
 pub mod image;
 pub mod lang;
+pub mod layout;
 pub mod prompt;
 pub mod similarity;
 pub mod text;

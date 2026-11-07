@@ -29,6 +29,8 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let mut current: Option<JoinHandle<()>> = None;
     let mut last_cfg_check = Instant::now();
     let mut fail_count = 0u32;
+    let mut auto = crate::auto::AutoState::default();
+    let mut last_auto = Instant::now();
 
     loop {
         tokio::time::sleep(Duration::from_millis(cfg.dialogue.interval_ms.clamp(50, 2000))).await;
@@ -46,6 +48,10 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
             let u = shared.ui.lock().unwrap();
             (u.dialogue_on, u.selecting_region)
         };
+        let auto_mode = cfg.dialogue.mode == "auto";
+        if !on || selecting || !auto_mode {
+            auto.clear(&shared);
+        }
         if !on || selecting {
             continue;
         }
@@ -56,8 +62,17 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 shared.ui(|u| u.paused_unfocused = !focused);
             }
             if !focused {
+                auto.clear(&shared);
                 continue;
             }
+        }
+
+        if auto_mode {
+            if last_auto.elapsed() >= Duration::from_millis(cfg.dialogue.auto_interval_ms.clamp(250, 3000)) {
+                last_auto = Instant::now();
+                auto.scan(&shared, &tr, &ocr).await;
+            }
+            continue;
         }
 
         let rect = PxRect::from_fraction(cfg.dialogue.region, win::screen_size());
