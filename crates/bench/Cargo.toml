@@ -1,0 +1,12 @@
+[package]
+name = "wuxia-bench"
+description = "Headless translation quality check: same prompts as the app, against any llama-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+wuxia-core = { path = "../core" }
+ureq = { version = "2", features = ["json"] }
+serde_json = "1"

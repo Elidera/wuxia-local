@@ -1,0 +1,107 @@
+# Translation quality check: runs the bundled test lines through real local models
+# (llama.cpp on the Linux runner, CPU) with exactly the prompts the app uses.
+# The report is shown on the run's Summary page and uploaded as an artifact.
+name: translation-quality
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Models to test (comma separated ids: hymt2-1.8b, qwen3.5-2b, hymt2-7b)"
+        required: false
+        default: "hymt2-1.8b,qwen3.5-2b"
+  push:
+    branches: [main]
+    paths:
+      - "crates/core/**"
+      - "crates/bench/**"
+      - "assets/glossary/**"
+      - "assets/bench/**"
+      - ".github/workflows/quality.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MODELS: ${{ github.event.inputs.models || 'hymt2-1.8b,qwen3.5-2b' }}
+      LLAMA_CACHE: ${{ github.workspace }}/models
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bench
+        run: cargo build -p wuxia-bench --release
+
+      - name: Download llama.cpp (Linux CPU)
+        run: |
+          tag=$(gh api "repos/ggml-org/llama.cpp/releases?per_page=30" --jq '[.[] | select(.tag_name | test("^b[0-9]+$"))][0].tag_name')
+          echo "llama.cpp $tag"
+          mkdir -p dl llama
+          gh release download "$tag" --repo ggml-org/llama.cpp --pattern "*bin-ubuntu-x64.*" --dir dl
+          ls -la dl
+          f=$(ls dl | head -1)
+          case "$f" in
+            *.zip) unzip -q "dl/$f" -d llama ;;
+            *.tar.gz) tar -xzf "dl/$f" -C llama ;;
+          esac
+          exe=$(find llama -name llama-server -type f | head -1)
+          test -n "$exe" || { echo "llama-server not found"; exit 1; }
+          echo "LLAMA_DIR=$(dirname "$(realpath "$exe")")" >> "$GITHUB_ENV"
+
+      - name: Cache models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ env.MODELS }}-v1
+
+      - name: Run translation tests
+        run: |
+          export LD_LIBRARY_PATH="$LLAMA_DIR:$LD_LIBRARY_PATH"
+          mkdir -p models reports
+          run_model () {
+            id="$1"; hf="$2"; prompt="$3"; extra="$4"; name="$5"
+            echo "::group::$name"
+            "$LLAMA_DIR/llama-server" --host 127.0.0.1 --port 8848 -hf "$hf" -c 4096 -ngl 0 -np 1 --jinja > "reports/$id.server.log" 2>&1 &
+            pid=$!
+            for i in $(seq 1 360); do
+              if curl -sf http://127.0.0.1:8848/health > /dev/null; then break; fi
+              if ! kill -0 $pid 2>/dev/null; then echo "server died"; tail -40 "reports/$id.server.log"; echo "::endgroup::"; return 1; fi
+              sleep 5
+            done
+            ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name" --prompt "$prompt" $extra \
+              --lines assets/bench/wwm_lines.txt --glossary assets/glossary --out "reports/$id.md" || true
+            kill $pid; wait $pid 2>/dev/null || true
+            tail -5 "reports/$id.server.log"
+            echo "::endgroup::"
+          }
+          IFS=',' read -ra ids <<< "$MODELS"
+          for id in "${ids[@]}"; do
+            id=$(echo "$id" | xargs)
+            case "$id" in
+              hymt2-1.8b) run_model "$id" "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M" hymt "--temp 0.7 --top-p 0.6 --top-k 20 --repeat 1.05" "Hy-MT2 1.8B Q4_K_M" ;;
+              hymt2-7b)   run_model "$id" "tencent/Hy-MT2-7B-GGUF:Q4_K_M"   hymt "--temp 0.7 --top-p 0.6 --top-k 20 --repeat 1.05" "Hy-MT2 7B Q4_K_M" ;;
+              qwen3.5-2b) run_model "$id" "unsloth/Qwen3.5-2B-GGUF:Q4_K_M"  instruct "--temp 0.3 --top-p 0.8 --top-k 20 --repeat 1.05 --no-think" "Qwen3.5 2B Q4_K_M" ;;
+              qwen3.5-4b) run_model "$id" "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"  instruct "--temp 0.3 --top-p 0.8 --top-k 20 --repeat 1.05 --no-think" "Qwen3.5 4B Q4_K_M" ;;
+              *) echo "unknown model id $id" ;;
+            esac
+          done
+          {
+            echo "# Проверка качества перевода"
+            echo
+            echo "Процессор GitHub (без видеокарты): время здесь в несколько раз больше, чем на игровом ПК."
+            echo
+            cat reports/*.md 2>/dev/null
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat reports/*.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: translation-quality-report
+          path: reports/
