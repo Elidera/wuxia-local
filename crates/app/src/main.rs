@@ -269,8 +269,8 @@ mod app {
                     });
                 }
                 Command::ReloadGlossary => {
-                    let n = tr.reload_glossary();
-                    shared.ui(|u| u.notice(format!("Глоссарий перечитан: {n} терминов")));
+                    let (n, f) = tr.reload_dictionaries();
+                    shared.ui(|u| u.notice(format!("Словари перечитаны: терминов {n}, исправлений {f}")));
                 }
                 Command::RunBench => {
                     let sh = shared.clone();
@@ -286,6 +286,29 @@ mod app {
                         if let Ok(p) = r {
                             open_path(&p);
                         }
+                    });
+                }
+                Command::TestTranslate(text) => {
+                    let (sh, tr) = (shared.clone(), tr.clone());
+                    tokio::spawn(async move {
+                        sh.ui(|u| u.test_result = Some("…".into()));
+                        let cfg = sh.cfg();
+                        let preset = cfg.active_model().clone();
+                        let src = tr.fix_ocr(&wuxia_core::text::normalize_line(&text));
+                        let kind = if src.chars().count() <= 8 && !src.contains(['，', '。', '！', '？']) {
+                            wuxia_core::prompt::TextKind::Interface
+                        } else {
+                            wuxia_core::prompt::TextKind::Dialogue
+                        };
+                        let opts = crate::translate::Opts { use_cache: true, use_history: false };
+                        let r = tr.translate(&preset, &cfg.general.game_title, &cfg.dialogue.style_hint, &src, kind, opts, |_| {}).await;
+                        sh.ui(|u| match r {
+                            Ok(o) => {
+                                u.test_result = Some(format!("{}  ({} мс{})", o.text, o.ms, if o.cached { ", кэш" } else { "" }));
+                                u.push_recent(crate::state::RecentLine { src: src.clone(), dst: o.text, model: preset.id.clone(), ms: o.ms, cached: o.cached });
+                            }
+                            Err(e) => u.test_result = Some(format!("Ошибка: {e}")),
+                        });
                     });
                 }
                 Command::SaveConfig => shared.save_config(),

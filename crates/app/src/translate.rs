@@ -8,6 +8,7 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::time::Instant;
 use wuxia_core::cache::Store;
+use wuxia_core::fixes::Fixes;
 use wuxia_core::glossary::Glossary;
 use wuxia_core::history::History;
 use wuxia_core::prompt::{self, PromptInput, PromptStyle, Reject, TextKind};
@@ -16,6 +17,7 @@ pub struct Translator {
     paths: Paths,
     client: LlmClient,
     glossary: Mutex<Glossary>,
+    fixes: Mutex<Fixes>,
     cache: Mutex<Store>,
     corrections: Mutex<Store>,
     history: Mutex<History>,
@@ -79,6 +81,15 @@ pub fn load_glossary(paths: &Paths) -> Glossary {
     g
 }
 
+pub fn load_fixes(paths: &Paths) -> Fixes {
+    let mut f = Fixes::new();
+    if let Ok(s) = std::fs::read_to_string(paths.fixes()) {
+        let n = f.load_tsv(&s);
+        tracing::info!("исправления fixes.tsv: {n} правил");
+    }
+    f
+}
+
 impl Translator {
     pub fn new(paths: Paths, client: LlmClient, context_lines: usize) -> Self {
         let mut cache = Store::new();
@@ -99,12 +110,25 @@ impl Translator {
                 "# Ваш глоссарий: китайский<TAB>русский<TAB>заметка. Перекрывает встроенный.\n# Пример:\n# 沈七\tШэнь Ци\tимя\n",
             );
         }
+        if !paths.fixes().exists() {
+            let _ = std::fs::write(
+                paths.fixes(),
+                "# Исправления: этап<TAB>что<TAB>на что\n\
+                 # ocr — исправить типичную ошибку распознавания ДО перевода\n\
+                 # ru  — заменить в русском переводе\n\
+                 # Примеры (уберите # в начале строки, чтобы включить):\n\
+                 # ocr\t末来\t未来\n\
+                 # ru\tЦзянху\tцзянху\n",
+            );
+        }
+        let fixes = load_fixes(&paths);
         let glossary = load_glossary(&paths);
         tracing::info!("кэш: {} · исправления: {} · глоссарий: {}", cache.len(), corrections.len(), glossary.len());
         Self {
             paths,
             client,
             glossary: Mutex::new(glossary),
+            fixes: Mutex::new(fixes),
             cache: Mutex::new(cache),
             corrections: Mutex::new(corrections),
             history: Mutex::new(History::new(context_lines)),
@@ -112,11 +136,23 @@ impl Translator {
         }
     }
 
-    pub fn reload_glossary(&self) -> usize {
+    /// Re-read glossaries and fixes. Returns (terms, fix rules).
+    pub fn reload_dictionaries(&self) -> (usize, usize) {
         let g = load_glossary(&self.paths);
-        let n = g.len();
+        let f = load_fixes(&self.paths);
+        let n = (g.len(), f.len());
         *self.glossary.lock().unwrap() = g;
+        *self.fixes.lock().unwrap() = f;
         n
+    }
+
+    /// Fix typical OCR errors before translation (fixes.tsv, stage `ocr`).
+    pub fn fix_ocr(&self, s: &str) -> String {
+        self.fixes.lock().unwrap().apply_ocr(s)
+    }
+
+    fn fix_ru(&self, s: &str) -> String {
+        self.fixes.lock().unwrap().apply_ru(s)
     }
 
     pub fn glossary_len(&self) -> usize {
@@ -146,11 +182,13 @@ impl Translator {
             return Some(c.to_string());
         }
         if kind != TextKind::Dialogue {
-            if let Some(t) = self.glossary.lock().unwrap().exact(src) {
-                return Some(t.dst.clone());
+            let exact = self.glossary.lock().unwrap().exact(src).map(|t| t.dst.clone());
+            if let Some(t) = exact {
+                return Some(self.fix_ru(&t));
             }
         }
-        self.cache.lock().unwrap().get(&[model_id, kind_tag(kind), src]).map(str::to_string)
+        let hit = self.cache.lock().unwrap().get(&[model_id, kind_tag(kind), src]).map(str::to_string);
+        hit.map(|h| self.fix_ru(&h))
     }
 
     pub async fn translate(
@@ -232,9 +270,64 @@ impl Translator {
             let line = self.cache.lock().unwrap().insert(&[&preset.id, kind_tag(kind), src], &text);
             append(&self.paths.cache(), &line);
         }
+        let text = self.fix_ru(&text);
         if kind == TextKind::Dialogue && opts.use_history {
             self.history.lock().unwrap().push(src, &text);
         }
         Ok(Output { text, cached: false, ms })
+    }
+
+    /// Translate many interface labels in one request (see prompt::build_batch).
+    /// Returns translations in the same order; each is cached. Errors if the
+    /// answer cannot be split — the caller then falls back to one-by-one.
+    pub async fn translate_batch(&self, preset: &ModelPreset, game: &str, items: &[String]) -> Result<Vec<String>> {
+        if items.is_empty() {
+            return Ok(vec![]);
+        }
+        if !preset.template.trim().is_empty() {
+            return Err(anyhow!("свой шаблон промпта: пакетный режим отключён"));
+        }
+        let t0 = Instant::now();
+        let messages = {
+            let g = self.glossary.lock().unwrap();
+            let mut terms: Vec<&wuxia_core::glossary::Term> = Vec::new();
+            for it in items {
+                for t in g.find_in(it, 24) {
+                    if !terms.iter().any(|x| x.src == t.src) {
+                        terms.push(t);
+                    }
+                }
+            }
+            terms.truncate(40);
+            let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+            prompt::build_batch(PromptStyle::parse(&preset.prompt), &refs, &terms, game)
+        };
+        let mut p = preset.clone();
+        p.max_tokens = 48 * items.len() as u32 + 64;
+        let _slot = self.gate.lock().await;
+        let raw = self.client.chat(&messages, &p, |_| {}).await?;
+        drop(_slot);
+        let parts = prompt::parse_batch(&raw, items.len())
+            .ok_or_else(|| anyhow!("пакетный ответ не разделился на {} частей", items.len()))?;
+        let mut out = Vec::with_capacity(items.len());
+        let mut lines = String::new();
+        {
+            let mut cache = self.cache.lock().unwrap();
+            for (src, part) in items.iter().zip(parts) {
+                match prompt::clean_output(&part, src) {
+                    Ok(t) => {
+                        lines.push_str(&cache.insert(&[&preset.id, kind_tag(TextKind::Interface), src], &t));
+                        out.push(t);
+                    }
+                    // Names, numbers: keep what the model gave (or the source).
+                    Err(_) => out.push(if part.is_empty() { src.clone() } else { part }),
+                }
+            }
+        }
+        if !lines.is_empty() {
+            append(&self.paths.cache(), &lines);
+        }
+        tracing::info!(target: "translate", "[{}|ui-batch|{} мс] {} надписей", preset.id, t0.elapsed().as_millis(), items.len());
+        Ok(out.into_iter().map(|t| self.fix_ru(&t)).collect())
     }
 }

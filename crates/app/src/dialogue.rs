@@ -94,6 +94,7 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
             Event::Ready => {
                 let t0 = Instant::now();
                 let pre = if cfg.dialogue.preprocess == "contrast" { frame.contrast_gray() } else { frame };
+                let debug_frame = shared.ui.lock().unwrap().panel_open.then(|| std::sync::Arc::new(pre.clone()));
                 let lines = match ocr.recognize(pre, cfg.dialogue.upscale).await {
                     Ok(l) => l,
                     Err(e) => {
@@ -102,8 +103,15 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                     }
                 };
                 let ocr_ms = t0.elapsed().as_millis();
-                let txt = ocr::subtitle_text(lines);
-                shared.ui(|u| u.stats.add_ocr(ocr_ms));
+                let raw_text: String = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" / ");
+                let txt = tr.fix_ocr(&ocr::subtitle_text(lines));
+                shared.ui(|u| {
+                    u.stats.add_ocr(ocr_ms);
+                    if let Some(f) = debug_frame {
+                        let id = u.ocr_debug.as_ref().map_or(0, |d| d.id) + 1;
+                        u.ocr_debug = Some(crate::state::OcrDebug { frame: f, text: raw_text, ms: ocr_ms, id });
+                    }
+                });
                 // Chinese OCR turns other scripts into Latin garbage: require real Chinese text.
                 if text::han_count(&txt) < 2 || text::han_ratio(&txt) < 0.4 {
                     continue;

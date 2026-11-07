@@ -43,6 +43,7 @@ pub enum Command {
     SwitchModel(String),
     RestartServer,
     SaveCorrection { src: String, dst: String },
+    TestTranslate(String),
     ReloadGlossary,
     RunBench,
     SaveConfig,
@@ -76,6 +77,15 @@ pub struct InterfaceView {
     pub items: Vec<InterfaceItem>,
     pub pending: usize,
     pub generation: u64,
+}
+
+/// What the dialogue OCR saw last time (shown in the panel for troubleshooting).
+#[derive(Debug, Clone)]
+pub struct OcrDebug {
+    pub frame: std::sync::Arc<wuxia_core::image::Frame>,
+    pub text: String,
+    pub ms: u128,
+    pub id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +142,9 @@ pub struct UiState {
     pub notices: VecDeque<String>,
     pub server: Option<ServerStatus>,
     pub bench_progress: Option<String>,
+    pub ocr_debug: Option<OcrDebug>,
+    /// Result of the panel's "check translation" field.
+    pub test_result: Option<String>,
     pub paused_unfocused: bool,
 }
 

@@ -59,6 +59,9 @@ impl Paths {
     pub fn user_glossary(&self) -> PathBuf {
         self.user_glossary_dir().join("user.tsv")
     }
+    pub fn fixes(&self) -> PathBuf {
+        self.data.join("fixes.tsv")
+    }
     /// Resolve a possibly relative path against the install dir.
     pub fn resolve(&self, p: &str) -> PathBuf {
         let pb = PathBuf::from(p);

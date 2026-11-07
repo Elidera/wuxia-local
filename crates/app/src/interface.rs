@@ -90,7 +90,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 busy: frame.busyness(&l.rect) > 30.0,
                 bg,
                 rect: l.rect,
-                src: l.text,
+                src: tr.fix_ocr(&l.text),
                 dst: None,
             }
         })
@@ -149,21 +149,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     }
 
     let game = cfg.general.game_title.clone();
-    for src in unique {
-        if shared.interface_gen.load(Ordering::SeqCst) != gen {
-            return; // hidden or replaced
-        }
-        let res = tr.translate(&preset, &game, "", &src, TextKind::Interface, Opts { use_cache: true, use_history: false }, |_| {}).await;
-        let dst = match res {
-            Ok(o) => {
-                shared.ui(|u| u.stats.add_llm(o.ms, o.cached));
-                o.text
-            }
-            Err(e) => {
-                tracing::warn!("UI-перевод «{src}»: {e}");
-                src.clone()
-            }
-        };
+    let set_result = |src: &str, dst: String| {
         shared.ui(|u| {
             if let Some(v) = u.interface.as_mut().filter(|v| v.generation == gen) {
                 for it in v.items.iter_mut().filter(|it| it.src == src) {
@@ -171,6 +157,53 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 }
                 v.pending = v.pending.saturating_sub(1);
             }
+        })
+    };
+    // Batches of up to 20 labels / ~600 chars: one model call each.
+    let mut chunks: Vec<Vec<String>> = Vec::new();
+    for src in unique {
+        let fits = chunks.last().map_or(false, |c: &Vec<String>| {
+            c.len() < 20 && c.iter().map(|s| s.chars().count()).sum::<usize>() + src.chars().count() < 600
         });
+        if fits {
+            chunks.last_mut().unwrap().push(src);
+        } else {
+            chunks.push(vec![src]);
+        }
+    }
+    for chunk in chunks {
+        if shared.interface_gen.load(Ordering::SeqCst) != gen {
+            return; // hidden or replaced
+        }
+        if chunk.len() > 1 {
+            let t0 = std::time::Instant::now();
+            match tr.translate_batch(&preset, &game, &chunk).await {
+                Ok(out) => {
+                    shared.ui(|u| u.stats.add_llm(t0.elapsed().as_millis() / chunk.len() as u128, false));
+                    for (src, dst) in chunk.iter().zip(out) {
+                        set_result(src, dst);
+                    }
+                    continue;
+                }
+                Err(e) => tracing::warn!("пакетный перевод экрана: {e}; перевожу по одной"),
+            }
+        }
+        for src in chunk {
+            if shared.interface_gen.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            let res = tr.translate(&preset, &game, "", &src, TextKind::Interface, Opts { use_cache: true, use_history: false }, |_| {}).await;
+            let dst = match res {
+                Ok(o) => {
+                    shared.ui(|u| u.stats.add_llm(o.ms, o.cached));
+                    o.text
+                }
+                Err(e) => {
+                    tracing::warn!("UI-перевод «{src}»: {e}");
+                    src.clone()
+                }
+            };
+            set_result(&src, dst);
+        }
     }
 }

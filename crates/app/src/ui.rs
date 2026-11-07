@@ -28,6 +28,8 @@ pub struct WuxiaApp {
     frames: u32,
     exclude_attempts: u32,
     region_tex: Option<egui::TextureHandle>,
+    ocr_tex: Option<(u64, egui::TextureHandle)>,
+    test_input: String,
     drag_start: Option<Pos2>,
     edits: HashMap<String, String>,
     cfg_dirty_since: Option<Instant>,
@@ -79,6 +81,8 @@ impl WuxiaApp {
             frames: 0,
             exclude_attempts: 0,
             region_tex: None,
+            ocr_tex: None,
+            test_input: String::new(),
             drag_start: None,
             edits: HashMap::new(),
             cfg_dirty_since: None,
@@ -410,6 +414,28 @@ impl WuxiaApp {
 
     fn panel(&mut self, ctx: &egui::Context) {
         let shared = self.shared.clone();
+        // Texture of the last OCR'd subtitle strip, refreshed when a new one arrives.
+        let dbg = self.shared.ui.lock().unwrap().ocr_debug.clone();
+        if let Some(d) = &dbg {
+            if self.ocr_tex.as_ref().map_or(true, |(id, _)| *id != d.id) {
+                let mut rgba = Vec::with_capacity(d.frame.bgra.len());
+                for p in d.frame.bgra.chunks_exact(4) {
+                    rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
+                }
+                let img = egui::ColorImage::from_rgba_unmultiplied([d.frame.width as usize, d.frame.height as usize], &rgba);
+                self.ocr_tex = Some((d.id, ctx.load_texture("ocr_debug", img, egui::TextureOptions::LINEAR)));
+            }
+        }
+        let ocr_view = match (&dbg, &self.ocr_tex) {
+            (Some(d), Some((_, tex))) => Some(OcrView {
+                tex: tex.id(),
+                size: Vec2::new(d.frame.width as f32, d.frame.height as f32),
+                text: d.text.clone(),
+                ms: d.ms,
+            }),
+            _ => None,
+        };
+        let test_input = &mut self.test_input;
         let edits = &mut self.edits;
         let mut dirty = false;
         let mut protect_now = false;
@@ -423,7 +449,7 @@ impl WuxiaApp {
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        dirty |= panel_contents(ui, &shared, edits);
+                        dirty |= panel_contents(ui, &shared, edits, test_input, ocr_view.as_ref());
                     });
                 });
             },
@@ -450,9 +476,23 @@ impl WuxiaApp {
     }
 }
 
+struct OcrView {
+    tex: egui::TextureId,
+    size: Vec2,
+    text: String,
+    ms: u128,
+}
+
 /// Returns true if the config was edited.
-fn panel_contents(ui: &mut egui::Ui, shared: &Arc<Shared>, edits: &mut HashMap<String, String>) -> bool {
+fn panel_contents(
+    ui: &mut egui::Ui,
+    shared: &Arc<Shared>,
+    edits: &mut HashMap<String, String>,
+    test_input: &mut String,
+    ocr_view: Option<&OcrView>,
+) -> bool {
     let mut dirty = false;
+    let test_result = shared.ui.lock().unwrap().test_result.clone();
     let (server, stats, notices, recent, dialogue_on, show_original, bench, paused) = {
         let u = shared.ui.lock().unwrap();
         (
@@ -586,10 +626,13 @@ fn panel_contents(ui: &mut egui::Ui, shared: &Arc<Shared>, edits: &mut HashMap<S
         if ui.button("Открыть глоссарий").clicked() {
             shared.send(Command::Open(shared.paths.user_glossary()));
         }
-        if ui.button("Перечитать глоссарий").clicked() {
+        if ui.button("Исправления OCR и замены").clicked() {
+            shared.send(Command::Open(shared.paths.fixes()));
+        }
+        if ui.button("Перечитать словари").clicked() {
             shared.send(Command::ReloadGlossary);
         }
-        if ui.button("Исправления").clicked() {
+        if ui.button("Мои исправления перевода").clicked() {
             shared.send(Command::Open(shared.paths.corrections()));
         }
         if ui.button("Настройки (config.toml)").clicked() {
@@ -597,6 +640,34 @@ fn panel_contents(ui: &mut egui::Ui, shared: &Arc<Shared>, edits: &mut HashMap<S
         }
         if ui.button("Папка логов").clicked() {
             shared.send(Command::Open(shared.paths.logs()));
+        }
+    });
+
+    ui.separator();
+    ui.strong("Проверить перевод");
+    ui.horizontal(|ui| {
+        let resp = ui.add(egui::TextEdit::singleline(test_input).hint_text("вставьте китайский текст").desired_width(360.0));
+        let go = ui.button("Перевести").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        if go && !test_input.trim().is_empty() {
+            shared.send(Command::TestTranslate(test_input.trim().to_string()));
+        }
+    });
+    if let Some(r) = &test_result {
+        ui.label(egui::RichText::new(r).size(16.0));
+    }
+
+    ui.separator();
+    egui::CollapsingHeader::new("Что видит распознавание (последняя реплика)").default_open(false).show(ui, |ui| match ocr_view {
+        Some(v) => {
+            let w = ui.available_width().min(v.size.x);
+            let h = v.size.y * w / v.size.x.max(1.0);
+            ui.image(egui::load::SizedTexture::new(v.tex, Vec2::new(w, h)));
+            ui.label(format!("Распознано за {} мс:", v.ms));
+            ui.label(egui::RichText::new(if v.text.is_empty() { "(пусто)" } else { v.text.as_str() }).monospace());
+            ui.small("Если здесь мусор: подвиньте «порог яркости текста» или включите «Повышать контраст». Частые ошибки исправляются в «Исправления OCR и замены».");
+        }
+        None => {
+            ui.label("Пока ничего. Включите диалоги (F7) и дождитесь субтитров, держа эту панель открытой.");
         }
     });
 
