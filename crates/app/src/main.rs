@@ -49,7 +49,7 @@ mod app {
     use crate::paths::Paths;
     use crate::state::{Command, Shared, UiState};
     use crate::translate::Translator;
-    use crate::{bench, dialogue, hotkeys, interface, ui, win};
+    use crate::{bench, capture, dialogue, hotkeys, interface, ui, win};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, RwLock};
     use tokio::sync::mpsc;
@@ -209,17 +209,44 @@ mod app {
                     None => shared.ui(|u| u.notice("OCR не готов — перевод экрана недоступен")),
                 },
                 Command::ToggleOriginal => shared.ui(|u| u.show_original = !u.show_original),
-                Command::SelectRegion => shared.ui(|u| {
-                    u.selecting_region = !u.selecting_region;
-                    u.dialogue = None;
-                    u.interface = None;
+                Command::SelectRegion => {
+                    let selecting = shared.ui.lock().unwrap().selecting_region;
+                    if selecting {
+                        shared.ui(|u| {
+                            u.selecting_region = false;
+                            u.region_shot = None;
+                        });
+                    } else {
+                        // Hide our own windows, let them disappear, then take the screenshot.
+                        shared.ui(|u| {
+                            u.dialogue = None;
+                            u.interface = None;
+                            u.panel_open = false;
+                        });
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        let (sw, sh) = win::screen_size();
+                        match capture::capture(capture::PxRect { x: 0, y: 0, w: sw, h: sh }) {
+                            Ok(f) => shared.ui(|u| {
+                                u.region_shot = Some(Arc::new(f));
+                                u.selecting_region = true;
+                            }),
+                            Err(e) => shared.ui(|u| u.notice(format!("Снимок экрана: {e}"))),
+                        }
+                    }
+                }
+                Command::CancelRegion => shared.ui(|u| {
+                    u.selecting_region = false;
+                    u.region_shot = None;
                 }),
-                Command::CancelRegion => shared.ui(|u| u.selecting_region = false),
                 Command::RegionSelected(r) => {
                     shared.cfg.write().unwrap().dialogue.region = r;
                     shared.save_config();
                     shared.reset_watcher.store(true, Ordering::SeqCst);
-                    shared.ui(|u| u.selecting_region = false);
+                    shared.ui(|u| {
+                        u.selecting_region = false;
+                        u.region_shot = None;
+                        u.notice("Область субтитров сохранена");
+                    });
                     tracing::info!("новая область субтитров: {r:?}");
                 }
                 Command::TogglePanel => shared.ui(|u| u.panel_open = !u.panel_open),

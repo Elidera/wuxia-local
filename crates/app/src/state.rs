@@ -124,6 +124,8 @@ pub struct UiState {
     pub dialogue_on: bool,
     pub show_original: bool,
     pub selecting_region: bool,
+    /// Screenshot shown in the region picker.
+    pub region_shot: Option<std::sync::Arc<wuxia_core::image::Frame>>,
     pub panel_open: bool,
     pub recent: VecDeque<RecentLine>,
     pub stats: Stats,

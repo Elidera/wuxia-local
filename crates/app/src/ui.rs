@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::state::{Command, InterfaceView, Shared};
 use crate::win;
 use eframe::egui::{
-    self, text::LayoutJob, Align2, Color32, FontData, FontDefinitions, FontFamily, FontId, Id, LayerId, Order, Pos2, Rect,
+    self, text::LayoutJob, Color32, FontData, FontDefinitions, FontFamily, FontId, Id, LayerId, Order, Pos2, Rect,
     Rounding, Stroke, TextFormat, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
 };
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ pub struct WuxiaApp {
     /// Frames rendered while hidden; the overlay is shown only once it is transparent.
     frames: u32,
     exclude_attempts: u32,
-    passthrough: bool,
+    region_tex: Option<egui::TextureHandle>,
     drag_start: Option<Pos2>,
     edits: HashMap<String, String>,
     cfg_dirty_since: Option<Instant>,
@@ -78,7 +78,7 @@ impl WuxiaApp {
             applied_visibility: (None, None),
             frames: 0,
             exclude_attempts: 0,
-            passthrough: true,
+            region_tex: None,
             drag_start: None,
             edits: HashMap::new(),
             cfg_dirty_since: None,
@@ -169,22 +169,14 @@ impl eframe::App for WuxiaApp {
             )
         };
 
-        // Click-through except while the user drags a region.
-        let want_passthrough = !selecting;
-        if want_passthrough != self.passthrough {
-            ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(want_passthrough));
-            if !want_passthrough {
-                ctx.send_viewport_cmd(ViewportCommand::Focus);
-            }
-            self.passthrough = want_passthrough;
-        }
-
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("wuxia_overlay")));
         let screen = ctx.screen_rect();
 
+        let _ = screen;
         if selecting {
-            self.region_selection(ctx, &painter, screen, &cfg);
+            self.region_window(ctx, &cfg);
         } else {
+            self.region_tex = None;
             if let Some(view) = &interface {
                 draw_interface(ctx, &painter, view, &cfg, show_original);
             }
@@ -322,51 +314,98 @@ fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &Interface
 }
 
 impl WuxiaApp {
-    fn region_selection(&mut self, ctx: &egui::Context, painter: &egui::Painter, screen: Rect, cfg: &Config) {
-        painter.rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(110));
-        let cur = Self::region_rect(ctx, cfg);
-        painter.rect_stroke(cur, Rounding::same(2.0), Stroke::new(1.5, Color32::from_rgb(120, 180, 255)));
-        painter.text(
-            screen.center_top() + Vec2::new(0.0, 40.0),
-            Align2::CENTER_TOP,
-            "Выделите мышью область, где появляются субтитры (с запасом по краям).\nПравая кнопка мыши, Esc или повторное нажатие горячей клавиши — отмена. Синяя рамка — текущая область.",
-            FontId::proportional(20.0),
-            Color32::WHITE,
-        );
-        // The overlay is WS_EX_NOACTIVATE, so Esc may not reach it: right click also cancels.
-        let (pressed, down, released, pos, esc) = ctx.input(|i| {
-            (
-                i.pointer.primary_pressed(),
-                i.pointer.primary_down(),
-                i.pointer.primary_released(),
-                i.pointer.interact_pos(),
-                i.key_pressed(egui::Key::Escape) || i.pointer.secondary_clicked(),
-            )
-        });
-        if esc {
-            self.drag_start = None;
-            self.shared.send(Command::CancelRegion);
-            return;
-        }
-        if pressed {
-            self.drag_start = pos;
-        }
-        if let (Some(a), Some(b)) = (self.drag_start, pos) {
-            let r = Rect::from_two_pos(a, b);
-            if down || released {
-                painter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(255, 220, 120, 40));
-                painter.rect_stroke(r, Rounding::ZERO, Stroke::new(2.0, Color32::from_rgb(255, 210, 90)));
+    /// Region picker: a normal (opaque, focusable) full-screen window showing a
+    /// screenshot taken just before. The transparent overlay never stops being
+    /// click-through, so it can neither turn black nor trap the mouse.
+    fn region_window(&mut self, ctx: &egui::Context, cfg: &Config) {
+        let shot = self.shared.ui.lock().unwrap().region_shot.clone();
+        let Some(shot) = shot else { return };
+        if self.region_tex.is_none() {
+            let mut rgba = Vec::with_capacity(shot.bgra.len());
+            for p in shot.bgra.chunks_exact(4) {
+                rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
             }
-            if released {
-                self.drag_start = None;
-                if r.width() > 20.0 && r.height() > 10.0 {
-                    let s = screen.size();
-                    let frac = [r.min.x / s.x, r.min.y / s.y, r.width() / s.x, r.height() / s.y];
-                    self.shared.send(Command::RegionSelected(frac));
+            let img = egui::ColorImage::from_rgba_unmultiplied([shot.width as usize, shot.height as usize], &rgba);
+            self.region_tex = Some(ctx.load_texture("region_shot", img, egui::TextureOptions::LINEAR));
+        }
+        let Some(tex) = self.region_tex.clone() else { return };
+        let shared = self.shared.clone();
+        let region = cfg.dialogue.region;
+        let drag = &mut self.drag_start;
+        ctx.show_viewport_immediate(
+            ViewportId::from_hash_of("wuxia_region"),
+            ViewportBuilder::default()
+                .with_title("Wuxia Local — выбор области")
+                .with_fullscreen(true)
+                .with_decorations(false)
+                .with_always_on_top(),
+            |ctx, _class| {
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    shared.send(Command::CancelRegion);
                 }
-            }
-        }
-        ctx.request_repaint();
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let s = screen.size();
+                    let painter = ui.painter();
+                    painter.image(tex.id(), screen, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    painter.rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(70));
+                    let cur = Rect::from_min_size(
+                        Pos2::new(region[0] * s.x, region[1] * s.y),
+                        Vec2::new(region[2] * s.x, region[3] * s.y),
+                    );
+                    painter.rect_stroke(cur, Rounding::same(2.0), Stroke::new(2.0, Color32::from_rgb(120, 180, 255)));
+                    let help = ctx.fonts(|f| {
+                        f.layout(
+                            "Обведите мышью область, где появляются субтитры (с запасом по краям).\n\
+                             Esc или правая кнопка мыши — отмена. Синяя рамка — текущая область."
+                                .to_string(),
+                            FontId::proportional(20.0),
+                            Color32::WHITE,
+                            screen.width() * 0.8,
+                        )
+                    });
+                    let hr = Rect::from_center_size(
+                        Pos2::new(screen.center().x, 40.0 + help.size().y / 2.0),
+                        help.size() + Vec2::splat(20.0),
+                    );
+                    painter.rect_filled(hr, Rounding::same(8.0), Color32::from_black_alpha(200));
+                    painter.galley(hr.min + Vec2::splat(10.0), help, Color32::WHITE);
+
+                    let (pressed, down, released, pos, cancel) = ctx.input(|i| {
+                        (
+                            i.pointer.primary_pressed(),
+                            i.pointer.primary_down(),
+                            i.pointer.primary_released(),
+                            i.pointer.interact_pos(),
+                            i.key_pressed(egui::Key::Escape) || i.pointer.secondary_clicked(),
+                        )
+                    });
+                    if cancel {
+                        *drag = None;
+                        shared.send(Command::CancelRegion);
+                        return;
+                    }
+                    if pressed {
+                        *drag = pos;
+                    }
+                    if let (Some(a), Some(b)) = (*drag, pos) {
+                        let r = Rect::from_two_pos(a, b);
+                        if down || released {
+                            painter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(255, 220, 120, 40));
+                            painter.rect_stroke(r, Rounding::ZERO, Stroke::new(2.0, Color32::from_rgb(255, 210, 90)));
+                        }
+                        if released {
+                            *drag = None;
+                            if r.width() > 20.0 && r.height() > 10.0 {
+                                let frac = [r.min.x / s.x, r.min.y / s.y, r.width() / s.x, r.height() / s.y];
+                                shared.send(Command::RegionSelected(frac));
+                            }
+                        }
+                    }
+                });
+                ctx.request_repaint();
+            },
+        );
     }
 
     fn panel(&mut self, ctx: &egui::Context) {
