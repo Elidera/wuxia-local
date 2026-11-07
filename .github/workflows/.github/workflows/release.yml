@@ -1,0 +1,107 @@
+# Builds wuxia-local.exe, bundles llama-server (Vulkan + CPU) and produces the
+# Windows installer. Push a tag like v0.1.0 to publish a GitHub Release.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      llama_tag:
+        description: "llama.cpp release tag (empty = latest)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p wuxia-core
+
+  windows:
+    runs-on: windows-latest
+    needs: core-tests
+    env:
+      LLAMA_TAG: ${{ github.event.inputs.llama_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test core
+        run: cargo test -p wuxia-core
+
+      - name: Clippy
+        run: cargo clippy -p wuxia-local --release -- -D clippy::correctness
+
+      - name: Build
+        run: cargo build -p wuxia-local --release
+
+      - name: Download llama.cpp (Vulkan + CPU)
+        shell: pwsh
+        run: |
+          $tag = $env:LLAMA_TAG
+          if ([string]::IsNullOrEmpty($tag)) { $tag = (gh release view --repo ggml-org/llama.cpp --json tagName -q .tagName) }
+          Write-Host "llama.cpp $tag"
+          New-Item -ItemType Directory -Force dist/llama-vulkan, dist/llama-cpu | Out-Null
+          gh release download $tag --repo ggml-org/llama.cpp --pattern "*bin-win-vulkan-x64.zip" --dir dl
+          gh release download $tag --repo ggml-org/llama.cpp --pattern "*bin-win-cpu-x64.zip" --dir dl
+          Expand-Archive (Get-ChildItem dl/*vulkan-x64.zip).FullName -DestinationPath dist/llama-vulkan
+          Expand-Archive (Get-ChildItem dl/*cpu-x64.zip).FullName -DestinationPath dist/llama-cpu
+          # Some releases nest binaries in a subfolder: flatten.
+          foreach ($d in "dist/llama-vulkan","dist/llama-cpu") {
+            $exe = Get-ChildItem $d -Recurse -Filter llama-server.exe | Select-Object -First 1
+            if (-not $exe) { throw "llama-server.exe not found in $d" }
+            if ($exe.DirectoryName -ne (Resolve-Path $d).Path) { Move-Item "$($exe.DirectoryName)/*" $d -Force }
+          }
+          "$tag" | Out-File dist/LLAMA_VERSION.txt
+
+      - name: Stage files
+        shell: pwsh
+        run: |
+          Copy-Item target/release/wuxia-local.exe dist/
+          Copy-Item assets/config.default.toml dist/
+          Copy-Item -Recurse assets/glossary dist/glossary
+          Copy-Item -Recurse assets/bench dist/bench
+          Copy-Item README.md, LICENSE dist/
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force portable/WuxiaLocal | Out-Null
+          Copy-Item dist/* portable/WuxiaLocal -Recurse -Exclude llama-vulkan,llama-cpu
+          Copy-Item -Recurse dist/llama-vulkan portable/WuxiaLocal/llama
+          "portable" | Out-File portable/WuxiaLocal/portable.txt
+          Compress-Archive portable/WuxiaLocal WuxiaLocal-portable-x64.zip
+
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" "/DDist=$PWD\dist" installer\wuxia-local.iss
+          Get-ChildItem installer/Output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wuxia-local-windows
+          path: |
+            installer/Output/*.exe
+            WuxiaLocal-portable-x64.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer/Output/*.exe
+            WuxiaLocal-portable-x64.zip
