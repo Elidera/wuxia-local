@@ -1,0 +1,9 @@
+[package]
+name = "wuxia-core"
+description = "Platform-independent core of Wuxia Local: text cleanup, glossary, prompts, cache, change detection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Deliberately dependency-free: the core builds and tests on any OS.
+[dependencies]

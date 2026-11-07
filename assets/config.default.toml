@@ -1,0 +1,131 @@
+# Wuxia Local — настройки.
+# Файл копируется в %LOCALAPPDATA%\WuxiaLocal\config.toml при первом запуске.
+# Большинство параметров меняются в панели (F10). Отсутствующие поля берутся по умолчанию.
+
+[general]
+game_title = "Where Winds Meet (燕云十六声)"
+# Часть заголовка окна игры. Пока активно другое окно, захват на паузе (экономит CPU).
+window_match = "Where Winds Meet"
+pause_when_unfocused = true
+
+[llm]
+# managed — программа сама запускает llama-server.exe;
+# external — подключиться к уже запущенному OpenAI-совместимому серверу (другой ПК в сети, LM Studio, Ollama).
+mode = "managed"
+server_exe = "llama\\llama-server.exe"
+port = 8848
+external_url = "http://127.0.0.1:8080"
+active_model = "hymt2-1.8b"
+# Слои на видеокарте: 99 — всё на GPU (Vulkan), 0 — только процессор.
+gpu_layers = 99
+# Потоки CPU: 0 — автоматически (половина ядер, остальное игре).
+threads = 0
+ctx_size = 4096
+# Пониженный приоритет нейросети, чтобы не просаживать FPS.
+low_priority = true
+extra_args = []
+request_timeout_s = 60
+
+# Модели. hf — ссылка HuggingFace для автоматической загрузки при первом выборе
+# (единственный момент, когда нужен интернет). path заполняется сам после загрузки;
+# можно указать путь к своему .gguf вручную.
+# prompt: "hymt" — для переводческих моделей Tencent Hy-MT, "instruct" — для Qwen/Gemma и т. п.
+
+[[models]]
+id = "hymt2-1.8b"
+name = "Hy-MT2 1.8B Q4_K_M — быстрый (по умолчанию)"
+prompt = "hymt"
+hf = "tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+path = ""
+temperature = 0.7
+top_p = 0.6
+top_k = 20
+repeat_penalty = 1.05
+max_tokens = 256
+no_think = false
+template = ""
+size_gb = 1.13
+
+[[models]]
+id = "hymt2-7b"
+name = "Hy-MT2 7B Q4_K_M — качественный (мощный ПК)"
+prompt = "hymt"
+hf = "tencent/Hy-MT2-7B-GGUF:Q4_K_M"
+path = ""
+temperature = 0.7
+top_p = 0.6
+top_k = 20
+repeat_penalty = 1.05
+max_tokens = 256
+no_think = false
+template = ""
+size_gb = 4.62
+
+[[models]]
+id = "qwen3.5-2b"
+name = "Qwen3.5 2B Q4_K_M — альтернатива"
+prompt = "instruct"
+hf = "unsloth/Qwen3.5-2B-GGUF:Q4_K_M"
+path = ""
+temperature = 0.3
+top_p = 0.8
+top_k = 20
+repeat_penalty = 1.05
+max_tokens = 256
+no_think = true
+template = ""
+size_gb = 1.35
+
+[[models]]
+id = "qwen3.5-4b"
+name = "Qwen3.5 4B Q4_K_M — литературный"
+prompt = "instruct"
+hf = "unsloth/Qwen3.5-4B-GGUF:Q4_K_M"
+path = ""
+temperature = 0.3
+top_p = 0.8
+top_k = 20
+repeat_penalty = 1.05
+max_tokens = 256
+no_think = true
+template = ""
+size_gb = 2.9
+
+[dialogue]
+enabled = true
+# Область субтитров в долях экрана: [x, y, ширина, высота]. Удобнее выбрать мышью (Ctrl+F7).
+region = [0.18, 0.80, 0.64, 0.12]
+interval_ms = 150
+text_color = "light"
+ink_threshold = 200
+upscale = 2
+preprocess = "none"
+context_lines = 3
+show_original = false
+position = "below"
+font_size = 26.0
+backdrop_opacity = 0.72
+stable_frames = 2
+clear_frames = 4
+change_threshold = 0.03
+style_hint = ""
+split_speaker = true
+
+[interface]
+# replace — замена на месте, backdrop — тёмная подложка, list — списком сбоку
+mode = "replace"
+upscale = 0
+font_scale = 0.82
+max_lines = 120
+auto_hide = true
+
+[ocr]
+language = "zh-Hans-CN"
+
+[hotkeys]
+# Примеры: "F7", "Ctrl+F7", "Alt+Shift+T". Назначенная клавиша не передаётся в игру.
+toggle_dialogue = "F7"
+screen_translate = "F8"
+show_original = "F9"
+select_region = "Ctrl+F7"
+panel = "F10"
