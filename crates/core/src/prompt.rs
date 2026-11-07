@@ -181,13 +181,14 @@ pub const BATCH_SEP: &str = "|||";
 /// label and keeps terminology consistent across the screen.
 pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &str) -> Vec<Message> {
     let n = items.len();
-    let joined = items.join(BATCH_SEP);
+    // Numbered so a dropped or merged item does not shift all the others.
+    let joined = items.iter().enumerate().map(|(i, s)| format!("[{}]{s}", i + 1)).collect::<Vec<_>>().join(BATCH_SEP);
     match style {
         PromptStyle::HyMt => {
             let mut p = hymt_terms(terms);
             p.push_str(&format!(
-                "将以下文本翻译为俄语。这是游戏界面中的{n}条独立文字，用“{BATCH_SEP}”分隔。\
-                 译文必须保留相同数量的分隔符“{BATCH_SEP}”，且位置不变，每条文字单独翻译。\
+                "将以下文本翻译为俄语。这是游戏界面中的{n}条独立文字，用“{BATCH_SEP}”分隔，每条前面有编号[1]、[2]……\
+                 译文必须保留相同数量的分隔符“{BATCH_SEP}”和原来的编号，且位置不变，每条文字单独翻译。\
                  译文风格必须严格符合：{HYMT_STYLE_INTERFACE}。注意只需要输出翻译后的结果，不要额外解释：\n"
             ));
             p.push_str(&joined);
@@ -205,8 +206,8 @@ pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &s
             };
             let mut sys = instruct_system(&dummy);
             sys.push_str(&format!(
-                "\n9. На вход подаётся {n} отдельных надписей, разделённых «{BATCH_SEP}». Переведи каждую отдельно \
-                 и выведи переводы в том же порядке, разделяя их тем же «{BATCH_SEP}». Число разделителей должно совпасть."
+                "\n9. На вход подаётся {n} отдельных надписей с номерами [1], [2]…, разделённых «{BATCH_SEP}». \
+                 Переведи каждую отдельно и выведи переводы в том же порядке, с теми же номерами, разделяя их тем же «{BATCH_SEP}»."
             ));
             let mut u = String::new();
             if !terms.is_empty() {
@@ -221,6 +222,43 @@ pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &s
             vec![Message { role: "system", content: sys }, Message { role: "user", content: u }]
         }
     }
+}
+
+/// Split a numbered batch answer. Each slot is `Some` if that item was found:
+/// by its `[k]` number, or — when the model dropped the numbers — by position
+/// if the count matches exactly.
+pub fn parse_batch_indexed(raw: &str, n: usize) -> Vec<Option<String>> {
+    let s = strip_think(raw).replace("｜｜｜", BATCH_SEP).replace("| | |", BATCH_SEP);
+    let mut s = s.trim();
+    for p in PREFIXES {
+        if s.to_lowercase().starts_with(p) {
+            s = s[p.len()..].trim_start();
+        }
+    }
+    let parts: Vec<&str> = s.split(BATCH_SEP).map(str::trim).filter(|p| !p.is_empty()).collect();
+    let mut out: Vec<Option<String>> = vec![None; n];
+    let mut numbered = 0;
+    for p in &parts {
+        let p2 = p.trim_start_matches(['[', '【', '［']);
+        if p2.len() == p.len() {
+            continue;
+        }
+        let digits: String = p2.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let rest = p2[digits.len()..].trim_start_matches([']', '】', '］', '.', ')', ' ']).trim();
+        if let Ok(k) = digits.parse::<usize>() {
+            if (1..=n).contains(&k) && !rest.is_empty() && out[k - 1].is_none() {
+                out[k - 1] = Some(rest.to_string());
+                numbered += 1;
+            }
+        }
+    }
+    if numbered == 0 && parts.len() == n {
+        return parts.into_iter().map(|p| Some(p.to_string())).collect();
+    }
+    out
 }
 
 /// Split a batch answer back into items. `None` if the count does not match.
@@ -382,7 +420,13 @@ mod tests {
     fn batch_roundtrip() {
         let t = term("背包", "Инвентарь");
         let m = build_batch(PromptStyle::HyMt, &["背包", "任务", "设置"], &[&t], "G");
-        assert!(m[0].content.contains("背包|||任务|||设置"));
+        assert!(m[0].content.contains("[1]背包|||[2]任务|||[3]设置"));
+        // Model dropped item 2 and added a leading separator: the others survive.
+        let r = parse_batch_indexed("|||[1]Инвентарь|||[3] Настройки", 3);
+        assert_eq!(r, vec![Some("Инвентарь".to_string()), None, Some("Настройки".to_string())]);
+        // Numbers dropped but the count matches: by position.
+        assert_eq!(parse_batch_indexed("А|||Б", 2), vec![Some("А".to_string()), Some("Б".to_string())]);
+        assert_eq!(parse_batch_indexed("А|||Б", 3), vec![None, None, None]);
         assert!(m[0].content.starts_with("参考下面的翻译"));
         let m = build_batch(PromptStyle::Instruct, &["背包", "任务"], &[], "G");
         assert_eq!(m[0].role, "system");

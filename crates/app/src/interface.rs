@@ -175,20 +175,27 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         if shared.interface_gen.load(Ordering::SeqCst) != gen {
             return; // hidden or replaced
         }
+        let mut rest: Vec<String> = chunk.clone();
         if chunk.len() > 1 {
             let t0 = std::time::Instant::now();
             match tr.translate_batch(&preset, &game, &chunk).await {
                 Ok(out) => {
                     shared.ui(|u| u.stats.add_llm(t0.elapsed().as_millis() / chunk.len() as u128, false));
+                    rest.clear();
                     for (src, dst) in chunk.iter().zip(out) {
-                        set_result(src, dst);
+                        match dst {
+                            Some(d) => set_result(src, d),
+                            None => rest.push(src.clone()),
+                        }
                     }
-                    continue;
+                    if !rest.is_empty() {
+                        tracing::info!("пакет: {} надписей переведу по одной", rest.len());
+                    }
                 }
                 Err(e) => tracing::warn!("пакетный перевод экрана: {e}; перевожу по одной"),
             }
         }
-        for src in chunk {
+        for src in rest {
             if shared.interface_gen.load(Ordering::SeqCst) != gen {
                 return;
             }

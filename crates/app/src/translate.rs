@@ -280,7 +280,7 @@ impl Translator {
     /// Translate many interface labels in one request (see prompt::build_batch).
     /// Returns translations in the same order; each is cached. Errors if the
     /// answer cannot be split — the caller then falls back to one-by-one.
-    pub async fn translate_batch(&self, preset: &ModelPreset, game: &str, items: &[String]) -> Result<Vec<String>> {
+    pub async fn translate_batch(&self, preset: &ModelPreset, game: &str, items: &[String]) -> Result<Vec<Option<String>>> {
         if items.is_empty() {
             return Ok(vec![]);
         }
@@ -307,27 +307,28 @@ impl Translator {
         let _slot = self.gate.lock().await;
         let raw = self.client.chat(&messages, &p, |_| {}).await?;
         drop(_slot);
-        let parts = prompt::parse_batch(&raw, items.len())
-            .ok_or_else(|| anyhow!("пакетный ответ не разделился на {} частей", items.len()))?;
-        let mut out = Vec::with_capacity(items.len());
+        let parts = prompt::parse_batch_indexed(&raw, items.len());
+        if parts.iter().all(Option::is_none) {
+            return Err(anyhow!("пакетный ответ не удалось разобрать"));
+        }
+        let mut out: Vec<Option<String>> = Vec::with_capacity(items.len());
         let mut lines = String::new();
         {
             let mut cache = self.cache.lock().unwrap();
             for (src, part) in items.iter().zip(parts) {
-                match prompt::clean_output(&part, src) {
+                out.push(part.and_then(|part| match prompt::clean_output(&part, src) {
                     Ok(t) => {
                         lines.push_str(&cache.insert(&[&preset.id, kind_tag(TextKind::Interface), src], &t));
-                        out.push(t);
+                        Some(t)
                     }
-                    // Names, numbers: keep what the model gave (or the source).
-                    Err(_) => out.push(if part.is_empty() { src.clone() } else { part }),
-                }
+                    Err(_) => None, // the caller retries this one alone
+                }));
             }
         }
         if !lines.is_empty() {
             append(&self.paths.cache(), &lines);
         }
         tracing::info!(target: "translate", "[{}|ui-batch|{} мс] {} надписей", preset.id, t0.elapsed().as_millis(), items.len());
-        Ok(out.into_iter().map(|t| self.fix_ru(&t)).collect())
+        Ok(out.into_iter().map(|t| t.map(|t| self.fix_ru(&t))).collect())
     }
 }

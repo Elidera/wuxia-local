@@ -135,43 +135,41 @@ fn run_batch(a: &Args, lines: &[&str], g: &Glossary, agent: &ureq::Agent) {
             }
         }
         let msgs = prompt::build_batch(style, chunk, &terms, "Where Winds Meet (燕云十六声)");
-        let parsed = chat_n(agent, a, &msgs, 48 * chunk.len() as u32 + 64).ok().and_then(|raw| {
-            let p = prompt::parse_batch(&raw, chunk.len());
-            if p.is_none() {
-                eprintln!("batch split failed, raw: {raw}");
-            }
-            p
-        });
-        match parsed {
-            Some(parts) => {
-                batch_ok += 1;
-                for (l, p) in chunk.iter().zip(parts) {
-                    let t = prompt::clean_output(&p, l).unwrap_or(p);
-                    report.push_str(&format!("| {} | {} | пакет |\n", md_escape(l), md_escape(&t)));
+        let parts = chat_n(agent, a, &msgs, 48 * chunk.len() as u32 + 64)
+            .map(|raw| {
+                let p = prompt::parse_batch_indexed(&raw, chunk.len());
+                if p.iter().any(Option::is_none) {
+                    eprintln!("batch partially parsed, raw: {raw}");
                 }
+                p
+            })
+            .unwrap_or_else(|_| vec![None; chunk.len()]);
+        if parts.iter().all(Option::is_some) {
+            batch_ok += 1;
+        }
+        for (l, p) in chunk.iter().zip(parts) {
+            if let Some(t) = p.as_ref().and_then(|p| prompt::clean_output(p, l).ok()) {
+                report.push_str(&format!("| {} | {} | пакет |\n", md_escape(l), md_escape(&t)));
+                continue;
             }
-            None => {
-                for l in chunk {
-                    let inp = PromptInput {
-                        source: l,
-                        kind: TextKind::Interface,
-                        terms: g.find_in(l, 24),
-                        context_src: String::new(),
-                        context_pairs: String::new(),
-                        game: "Where Winds Meet (燕云十六声)",
-                        style_hint: "",
-                    };
-                    let t = chat(agent, a, &prompt::build(style, &inp))
-                        .ok()
-                        .and_then(|r| prompt::clean_output(&r, l).ok())
-                        .unwrap_or_else(|| "⚠".into());
-                    report.push_str(&format!("| {} | {} | по одной |\n", md_escape(l), md_escape(&t)));
-                }
-            }
+            let inp = PromptInput {
+                source: l,
+                kind: TextKind::Interface,
+                terms: g.find_in(l, 24),
+                context_src: String::new(),
+                context_pairs: String::new(),
+                game: "Where Winds Meet (燕云十六声)",
+                style_hint: "",
+            };
+            let t = chat(agent, a, &prompt::build(style, &inp))
+                .ok()
+                .and_then(|r| prompt::clean_output(&r, l).ok())
+                .unwrap_or_else(|| "⚠".into());
+            report.push_str(&format!("| {} | {} | по одной |\n", md_escape(l), md_escape(&t)));
         }
     }
     report.push_str(&format!(
-        "\n**Итог:** пакетов {batch_ok}/{batches} разобрано без отката, всего {} мс на {} надписей.\n\n",
+        "\n**Итог:** пакетов {batch_ok}/{batches} разобрано полностью, всего {} мс на {} надписей.\n\n",
         t_all.elapsed().as_millis(),
         lines.len()
     ));
