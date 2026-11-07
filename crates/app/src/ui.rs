@@ -25,6 +25,7 @@ pub struct WuxiaApp {
     applied_visibility: (Option<bool>, Option<bool>),
     /// Frames rendered while hidden; the overlay is shown only once it is transparent.
     frames: u32,
+    focus_frames: u32,
     exclude_attempts: u32,
     region_tex: Option<egui::TextureHandle>,
     ocr_tex: Option<(u64, egui::TextureHandle)>,
@@ -78,6 +79,7 @@ impl WuxiaApp {
             panel_hwnd: None,
             applied_visibility: (None, None),
             frames: 0,
+            focus_frames: 0,
             exclude_attempts: 0,
             region_tex: None,
             ocr_tex: None,
@@ -202,6 +204,22 @@ impl eframe::App for WuxiaApp {
 
         if panel_open {
             self.panel(ctx);
+            // Bring it to the front a few frames after (re)opening.
+            if self.shared.ui.lock().unwrap().focus_panel {
+                self.focus_frames = 6;
+                self.shared.ui.lock().unwrap().focus_panel = false;
+            }
+            if self.focus_frames > 0 {
+                self.focus_frames -= 1;
+                let id = ViewportId::from_hash_of("wuxia_panel");
+                ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+                if self.focus_frames == 3 {
+                    if let Some(h) = win::find_window(PANEL_TITLE) {
+                        win::bring_to_front(h);
+                    }
+                }
+                ctx.request_repaint_after(Duration::from_millis(60));
+            }
         }
 
         // Debounced config save after edits in the panel.
@@ -438,7 +456,11 @@ impl WuxiaApp {
         let mut protect_now = false;
         ctx.show_viewport_immediate(
             ViewportId::from_hash_of("wuxia_panel"),
-            ViewportBuilder::default().with_title(PANEL_TITLE).with_inner_size([880.0, 720.0]).with_min_inner_size([720.0, 480.0]),
+            ViewportBuilder::default()
+                .with_title(PANEL_TITLE)
+                .with_inner_size([880.0, 720.0])
+                .with_min_inner_size([720.0, 480.0])
+                .with_active(true),
             |ctx, _class| {
                 protect_now = true;
                 if ctx.input(|i| i.viewport().close_requested()) {

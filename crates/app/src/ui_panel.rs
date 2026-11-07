@@ -47,6 +47,8 @@ pub struct OcrView {
 /// Global look for all egui widgets (the overlay paints with explicit colours,
 /// so it is not affected).
 pub fn apply_theme(ctx: &egui::Context) {
+    // Always dark, regardless of the Windows light/dark setting.
+    ctx.set_theme(egui::ThemePreference::Dark);
     let mut style = (*ctx.style()).clone();
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG;

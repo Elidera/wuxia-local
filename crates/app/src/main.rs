@@ -158,7 +158,10 @@ mod app {
         rt.spawn(dispatcher(shared.clone(), translator.clone(), ocr.clone(), cmd_rx, srv_tx));
 
         // The panel is the only visible sign that the program runs: always show it at start.
-        shared.ui(|u| u.panel_open = true);
+        shared.ui(|u| {
+            u.panel_open = true;
+            u.focus_panel = true;
+        });
         {
             let tx = cmd_tx.clone();
             win::listen_show_panel(move || {
@@ -260,8 +263,14 @@ mod app {
                     });
                     tracing::info!("новая область субтитров: {r:?}");
                 }
-                Command::TogglePanel => shared.ui(|u| u.panel_open = !u.panel_open),
-                Command::ShowPanel => shared.ui(|u| u.panel_open = true),
+                Command::TogglePanel => shared.ui(|u| {
+                    u.panel_open = !u.panel_open;
+                    u.focus_panel = u.panel_open;
+                }),
+                Command::ShowPanel => shared.ui(|u| {
+                    u.panel_open = true;
+                    u.focus_panel = true;
+                }),
                 Command::SwitchModel(id) => {
                     shared.cfg.write().unwrap().llm.active_model = id;
                     shared.save_config();

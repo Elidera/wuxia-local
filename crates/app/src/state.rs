@@ -137,6 +137,8 @@ pub struct UiState {
     /// Screenshot shown in the region picker.
     pub region_shot: Option<std::sync::Arc<wuxia_core::image::Frame>>,
     pub panel_open: bool,
+    /// Bring the panel to the front on the next frames (it can open behind the game).
+    pub focus_panel: bool,
     pub recent: VecDeque<RecentLine>,
     pub stats: Stats,
     pub notices: VecDeque<String>,

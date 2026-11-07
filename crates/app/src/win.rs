@@ -14,7 +14,7 @@ use windows::Win32::System::JobObjects::{
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId,
-    SetWindowDisplayAffinity,
+    SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow, SW_RESTORE,
     SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
@@ -67,6 +67,15 @@ pub fn make_tool_window(hwnd: isize) {
 pub fn set_capture_visible(hwnd: isize, visible: bool) -> Result<(), String> {
     let mode = if visible { WDA_NONE } else { WDA_EXCLUDEFROMCAPTURE };
     unsafe { SetWindowDisplayAffinity(HWND(hwnd as *mut _), mode).map_err(|e| e.to_string()) }
+}
+
+/// Restore and focus a window (the panel may open behind the game or the browser).
+pub fn bring_to_front(hwnd: isize) {
+    unsafe {
+        let h = HWND(hwnd as *mut _);
+        let _ = ShowWindow(h, SW_RESTORE);
+        let _ = SetForegroundWindow(h);
+    }
 }
 
 /// Executable name (lower-case, e.g. "chrome.exe") of the foreground window's process.
