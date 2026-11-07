@@ -77,6 +77,8 @@ jobs:
             done
             ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name" --prompt "$prompt" $extra \
               --lines assets/bench/wwm_lines.txt --glossary assets/glossary --out "reports/$id.md" || true
+            ./target/release/wuxia-bench --server http://127.0.0.1:8848 --name "$name" --prompt "$prompt" $extra --batch \
+              --lines assets/bench/ui_lines.txt --glossary assets/glossary --out "reports/$id.ui.md" || true
             kill $pid; wait $pid 2>/dev/null || true
             tail -5 "reports/$id.server.log"
             echo "::endgroup::"

@@ -23,6 +23,7 @@ struct Args {
     top_k: i32,
     repeat: f32,
     no_think: bool,
+    batch: bool,
     out: Option<String>,
 }
 
@@ -38,6 +39,7 @@ fn parse_args() -> Args {
         top_k: 20,
         repeat: 1.05,
         no_think: false,
+        batch: false,
         out: None,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
@@ -57,6 +59,11 @@ fn parse_args() -> Args {
             "--out" => a.out = Some(val()),
             "--no-think" => {
                 a.no_think = true;
+                i += 1;
+                continue;
+            }
+            "--batch" => {
+                a.batch = true;
                 i += 1;
                 continue;
             }
@@ -85,10 +92,14 @@ fn load_glossary(dir: &str) -> Glossary {
 }
 
 fn chat(agent: &ureq::Agent, a: &Args, messages: &[prompt::Message]) -> Result<String, String> {
+    chat_n(agent, a, messages, 256)
+}
+
+fn chat_n(agent: &ureq::Agent, a: &Args, messages: &[prompt::Message], max_tokens: u32) -> Result<String, String> {
     let msgs: Vec<Value> = messages.iter().map(|m| json!({"role": m.role, "content": m.content})).collect();
     let mut body = json!({
         "messages": msgs, "stream": false, "temperature": a.temp, "top_p": a.top_p,
-        "top_k": a.top_k, "repeat_penalty": a.repeat, "max_tokens": 256, "cache_prompt": true,
+        "top_k": a.top_k, "repeat_penalty": a.repeat, "max_tokens": max_tokens, "cache_prompt": true,
     });
     if a.no_think {
         body["chat_template_kwargs"] = json!({"enable_thinking": false});
@@ -106,6 +117,70 @@ fn md_escape(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
 
+/// Interface mode check: labels in batches of 20 exactly like the app, with
+/// per-label fallback when the batch answer cannot be split.
+fn run_batch(a: &Args, lines: &[&str], g: &Glossary, agent: &ureq::Agent) {
+    let style = PromptStyle::parse(&a.prompt);
+    let mut report = format!("## {} — интерфейс (пакетами по 20)\n\n| Надпись | Перевод | способ |\n|---|---|---|\n", a.name);
+    let (mut batches, mut batch_ok) = (0, 0);
+    let t_all = Instant::now();
+    for chunk in lines.chunks(20) {
+        batches += 1;
+        let mut terms: Vec<&wuxia_core::glossary::Term> = Vec::new();
+        for l in chunk {
+            for t in g.find_in(l, 24) {
+                if !terms.iter().any(|x| x.src == t.src) {
+                    terms.push(t);
+                }
+            }
+        }
+        let msgs = prompt::build_batch(style, chunk, &terms, "Where Winds Meet (燕云十六声)");
+        let parsed = chat_n(agent, a, &msgs, 48 * chunk.len() as u32 + 64).ok().and_then(|raw| {
+            let p = prompt::parse_batch(&raw, chunk.len());
+            if p.is_none() {
+                eprintln!("batch split failed, raw: {raw}");
+            }
+            p
+        });
+        match parsed {
+            Some(parts) => {
+                batch_ok += 1;
+                for (l, p) in chunk.iter().zip(parts) {
+                    let t = prompt::clean_output(&p, l).unwrap_or(p);
+                    report.push_str(&format!("| {} | {} | пакет |\n", md_escape(l), md_escape(&t)));
+                }
+            }
+            None => {
+                for l in chunk {
+                    let inp = PromptInput {
+                        source: l,
+                        kind: TextKind::Interface,
+                        terms: g.find_in(l, 24),
+                        context_src: String::new(),
+                        context_pairs: String::new(),
+                        game: "Where Winds Meet (燕云十六声)",
+                        style_hint: "",
+                    };
+                    let t = chat(agent, a, &prompt::build(style, &inp))
+                        .ok()
+                        .and_then(|r| prompt::clean_output(&r, l).ok())
+                        .unwrap_or_else(|| "⚠".into());
+                    report.push_str(&format!("| {} | {} | по одной |\n", md_escape(l), md_escape(&t)));
+                }
+            }
+        }
+    }
+    report.push_str(&format!(
+        "\n**Итог:** пакетов {batch_ok}/{batches} разобрано без отката, всего {} мс на {} надписей.\n\n",
+        t_all.elapsed().as_millis(),
+        lines.len()
+    ));
+    println!("{report}");
+    if let Some(p) = &a.out {
+        std::fs::write(p, &report).expect("write report");
+    }
+}
+
 fn main() {
     let a = parse_args();
     let text = std::fs::read_to_string(&a.lines).expect("lines file");
@@ -113,6 +188,10 @@ fn main() {
     let g = load_glossary(&a.glossary);
     let style = PromptStyle::parse(&a.prompt);
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).build();
+    if a.batch {
+        run_batch(&a, &lines, &g, &agent);
+        return;
+    }
     let mut hist = History::new(3);
 
     let mut report = String::new();

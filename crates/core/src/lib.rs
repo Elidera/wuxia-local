@@ -6,6 +6,7 @@
 
 pub mod cache;
 pub mod detect;
+pub mod fixes;
 pub mod glossary;
 pub mod history;
 pub mod image;

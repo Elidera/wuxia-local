@@ -174,6 +174,68 @@ pub fn render_custom(template: &str, inp: &PromptInput) -> Vec<Message> {
     }
 }
 
+/// Separator between items of a batch request (interface mode).
+pub const BATCH_SEP: &str = "|||";
+
+/// One request for many short interface labels: faster than one request per
+/// label and keeps terminology consistent across the screen.
+pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &str) -> Vec<Message> {
+    let n = items.len();
+    let joined = items.join(BATCH_SEP);
+    match style {
+        PromptStyle::HyMt => {
+            let mut p = hymt_terms(terms);
+            p.push_str(&format!(
+                "将以下文本翻译为俄语。这是游戏界面中的{n}条独立文字，用“{BATCH_SEP}”分隔。\
+                 译文必须保留相同数量的分隔符“{BATCH_SEP}”，且位置不变，每条文字单独翻译。\
+                 译文风格必须严格符合：{HYMT_STYLE_INTERFACE}。注意只需要输出翻译后的结果，不要额外解释：\n"
+            ));
+            p.push_str(&joined);
+            vec![Message { role: "user", content: p }]
+        }
+        PromptStyle::Instruct => {
+            let dummy = PromptInput {
+                source: "",
+                kind: TextKind::Interface,
+                terms: vec![],
+                context_src: String::new(),
+                context_pairs: String::new(),
+                game,
+                style_hint: "",
+            };
+            let mut sys = instruct_system(&dummy);
+            sys.push_str(&format!(
+                "\n9. На вход подаётся {n} отдельных надписей, разделённых «{BATCH_SEP}». Переведи каждую отдельно \
+                 и выведи переводы в том же порядке, разделяя их тем же «{BATCH_SEP}». Число разделителей должно совпасть."
+            ));
+            let mut u = String::new();
+            if !terms.is_empty() {
+                u.push_str("Глоссарий:\n");
+                for t in terms {
+                    u.push_str(&format!("{} — {}\n", t.src, t.dst));
+                }
+                u.push('\n');
+            }
+            u.push_str("Переведи на русский:\n");
+            u.push_str(&joined);
+            vec![Message { role: "system", content: sys }, Message { role: "user", content: u }]
+        }
+    }
+}
+
+/// Split a batch answer back into items. `None` if the count does not match.
+pub fn parse_batch(raw: &str, n: usize) -> Option<Vec<String>> {
+    let s = strip_think(raw).replace("｜｜｜", BATCH_SEP).replace("| | |", BATCH_SEP);
+    let mut s = s.trim();
+    for p in PREFIXES {
+        if s.to_lowercase().starts_with(p) {
+            s = s[p.len()..].trim_start();
+        }
+    }
+    let parts: Vec<String> = s.split(BATCH_SEP).map(|p| p.trim().to_string()).collect();
+    (parts.len() == n && parts.iter().all(|p| !p.is_empty())).then_some(parts)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reject {
     Empty,
@@ -314,6 +376,20 @@ mod tests {
         let m = render_custom("Sys {game}\n---\nTranslate: {source}", &inp);
         assert_eq!(m[0].content, "Sys G");
         assert_eq!(m[1].content, "Translate: 你好");
+    }
+
+    #[test]
+    fn batch_roundtrip() {
+        let t = term("背包", "Инвентарь");
+        let m = build_batch(PromptStyle::HyMt, &["背包", "任务", "设置"], &[&t], "G");
+        assert!(m[0].content.contains("背包|||任务|||设置"));
+        assert!(m[0].content.starts_with("参考下面的翻译"));
+        let m = build_batch(PromptStyle::Instruct, &["背包", "任务"], &[], "G");
+        assert_eq!(m[0].role, "system");
+        assert_eq!(parse_batch("Инвентарь ||| Задания|||Настройки", 3).unwrap(), vec!["Инвентарь", "Задания", "Настройки"]);
+        assert_eq!(parse_batch("Инвентарь｜｜｜Задания", 2).unwrap().len(), 2);
+        assert!(parse_batch("Инвентарь|||Задания", 3).is_none());
+        assert!(parse_batch("Инвентарь||||||", 3).is_none());
     }
 
     #[test]
