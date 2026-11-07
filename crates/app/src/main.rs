@@ -127,6 +127,7 @@ mod app {
             dialogue_seq: AtomicU64::new(0),
             interface_gen: AtomicU64::new(0),
             reset_watcher: AtomicBool::new(false),
+            overlay_px: Mutex::new(Vec::new()),
         });
 
         // Hotkeys.
@@ -238,7 +239,16 @@ mod app {
                 }
                 Command::ScreenTranslate => match &ocr {
                     Some(o) => {
-                        tokio::spawn(interface::toggle(shared.clone(), tr.clone(), o.clone()));
+                        let (sh, tr, o) = (shared.clone(), tr.clone(), o.clone());
+                        tokio::spawn(async move {
+                            // The panel would be photographed and "translated" too: hide it first.
+                            let was_open = sh.ui.lock().unwrap().panel_open;
+                            if was_open && sh.ui.lock().unwrap().interface.is_none() {
+                                sh.ui(|u| u.panel_open = false);
+                                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                            }
+                            interface::toggle(sh, tr, o).await;
+                        });
                     }
                     None => shared.ui(|u| u.notice("OCR не готов — перевод экрана недоступен")),
                 },

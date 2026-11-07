@@ -55,6 +55,27 @@ impl Frame {
         [self.bgra[i], self.bgra[i + 1], self.bgra[i + 2], self.bgra[i + 3]]
     }
 
+    /// Paint a rectangle black (clipped to the frame). Used to blank out our own
+    /// overlay so it never gets into OCR or change detection.
+    pub fn mask(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        let x0 = x.max(0) as u32;
+        let y0 = y.max(0) as u32;
+        let x1 = ((x + w).max(0) as u32).min(self.width);
+        let y1 = ((y + h).max(0) as u32).min(self.height);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        for row in y0..y1 {
+            let s = ((row * self.width + x0) * 4) as usize;
+            let e = ((row * self.width + x1) * 4) as usize;
+            for px in self.bgra[s..e].chunks_exact_mut(4) {
+                px[0] = 0;
+                px[1] = 0;
+                px[2] = 0;
+            }
+        }
+    }
+
     pub fn crop(&self, x: u32, y: u32, w: u32, h: u32) -> Frame {
         let x = x.min(self.width);
         let y = y.min(self.height);

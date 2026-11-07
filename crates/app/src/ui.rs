@@ -178,16 +178,17 @@ impl eframe::App for WuxiaApp {
         let screen = ctx.screen_rect();
 
         let _ = screen;
+        let mut painted: Vec<Rect> = Vec::new();
         if selecting {
             self.region_window(ctx, &cfg);
         } else {
             self.region_tex = None;
             if let Some(view) = &interface {
-                draw_interface(ctx, &painter, view, &cfg, show_original);
+                painted.extend(draw_interface(ctx, &painter, view, &cfg, show_original));
             }
             if let Some(d) = &dialogue {
                 if interface.is_none() {
-                    draw_dialogue(ctx, &painter, d, &cfg, show_original);
+                    painted.extend(draw_dialogue(ctx, &painter, d, &cfg, show_original));
                 }
             }
             // Tiny status badge while the model is not ready.
@@ -199,8 +200,17 @@ impl eframe::App for WuxiaApp {
                     let r = Rect::from_min_size(Pos2::new(12.0, 12.0), g.size() + Vec2::splat(12.0));
                     painter.rect_filled(r, Rounding::same(6.0), Color32::from_black_alpha(170));
                     painter.galley(r.min + Vec2::splat(6.0), g, Color32::WHITE);
+                    painted.push(r);
                 }
             }
+        }
+        {
+            let ppp = ctx.pixels_per_point();
+            let px: Vec<[i32; 4]> = painted
+                .iter()
+                .map(|r| [(r.left() * ppp) as i32, (r.top() * ppp) as i32, (r.width() * ppp).ceil() as i32, (r.height() * ppp).ceil() as i32])
+                .collect();
+            *self.shared.overlay_px.lock().unwrap() = px;
         }
 
         if panel_open {
@@ -235,7 +245,7 @@ impl eframe::App for WuxiaApp {
     }
 }
 
-fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state::DialogueView, cfg: &Config, show_original: bool) {
+fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state::DialogueView, cfg: &Config, show_original: bool) -> Option<Rect> {
     let region = WuxiaApp::region_rect(ctx, cfg);
     let size = cfg.dialogue.font_size;
     let body = if show_original {
@@ -247,7 +257,7 @@ fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state:
     } else if let Some(e) = &d.error {
         format!("{}  [ошибка: {}]", d.source, e.chars().take(60).collect::<String>())
     } else {
-        return;
+        return None;
     };
     let wrap = (region.width() * 1.1).max(300.0);
     let mut job = LayoutJob::default();
@@ -281,13 +291,15 @@ fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state:
     // The galley is centre-aligned around x=0 when halign=Center.
     let pos = Pos2::new(plate.center().x - gsize.x / 2.0 - galley.rect.min.x, plate.top() + pad.y);
     shadowed_text(painter, pos, galley, Color32::WHITE);
+    Some(plate)
 }
 
-fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &InterfaceView, cfg: &Config, show_original: bool) {
+fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &InterfaceView, cfg: &Config, show_original: bool) -> Vec<Rect> {
     let ppp = ctx.pixels_per_point();
     let mode = cfg.interface.mode.as_str();
+    let mut painted = Vec::new();
     if show_original {
-        return;
+        return painted;
     }
     if mode == "list" {
         let mut job = LayoutJob::default();
@@ -302,6 +314,7 @@ fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &Interface
         let r = Rect::from_min_size(Pos2::new(screen.right() - g.size().x - 36.0, 60.0), g.size() + Vec2::splat(24.0));
         painter.rect_filled(r, Rounding::same(8.0), Color32::from_black_alpha(215));
         painter.galley(r.min + Vec2::splat(12.0), g, Color32::WHITE);
+        painted.push(r);
     } else {
         for it in &view.items {
             let Some(dst) = &it.dst else { continue };
@@ -321,6 +334,7 @@ fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &Interface
                 (Color32::from_rgb(it.bg[0], it.bg[1], it.bg[2]), Color32::from_rgb(it.fg[0], it.fg[1], it.fg[2]))
             };
             painter.rect_filled(cover, Rounding::same(if it.busy || mode == "backdrop" { 4.0 } else { 1.0 }), fill);
+            painted.push(cover);
             let pos = Pos2::new(r.left(), r.center().y - g.size().y / 2.0);
             painter.galley(pos, g, fg);
         }
@@ -331,7 +345,9 @@ fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &Interface
         let r = Rect::from_min_size(Pos2::new(screen.right() - g.size().x - 24.0, 12.0), g.size() + Vec2::splat(12.0));
         painter.rect_filled(r, Rounding::same(6.0), Color32::from_black_alpha(180));
         painter.galley(r.min + Vec2::splat(6.0), g, Color32::WHITE);
+        painted.push(r);
     }
+    painted
 }
 
 impl WuxiaApp {

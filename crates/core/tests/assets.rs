@@ -43,6 +43,7 @@ fn wuwa_glossary_and_english_lines() {
     let mut with_terms = 0;
     for l in lines.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
         assert_eq!(wuxia_core::lang::detect(l), Some(wuxia_core::lang::Lang::En), "{l}");
+        assert!(wuxia_core::lang::is_subtitle(l, wuxia_core::lang::Lang::En), "not a subtitle: {l}");
         if !g.find_in(l, 8).is_empty() {
             with_terms += 1;
         }

@@ -61,7 +61,7 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         }
 
         let rect = PxRect::from_fraction(cfg.dialogue.region, win::screen_size());
-        let frame = match capture::capture(rect) {
+        let frame = match capture::capture_clean(&shared, rect) {
             Ok(f) => {
                 fail_count = 0;
                 f

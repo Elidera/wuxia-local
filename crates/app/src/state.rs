@@ -190,6 +190,9 @@ pub struct Shared {
     pub dialogue_seq: AtomicU64,
     pub interface_gen: AtomicU64,
     pub reset_watcher: AtomicBool,
+    /// Screen rectangles (physical px, x/y/w/h) the overlay painted in its last
+    /// frame. Captures blank them out (see `capture::capture_clean`).
+    pub overlay_px: Mutex<Vec<[i32; 4]>>,
 }
 
 impl Shared {

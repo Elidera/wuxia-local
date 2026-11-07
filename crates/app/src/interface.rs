@@ -49,7 +49,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let cfg = shared.cfg();
     let screen = win::screen_size();
     let full = PxRect { x: 0, y: 0, w: screen.0, h: screen.1 };
-    let frame = match capture::capture(full) {
+    let frame = match capture::capture_clean(&shared, full) {
         Ok(f) => f,
         Err(e) => {
             shared.ui(|u| u.notice(format!("Захват экрана: {e}")));
@@ -127,17 +127,25 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     shared.ui(|u| u.interface = Some(InterfaceView { items, pending: n_pending, generation: gen }));
 
     // Auto-hide watcher: the game screen changed (menu closed / scrolled).
+    // Our own translation labels are blanked in both pictures, so only a real
+    // change of the game screen counts; two changed checks in a row are needed
+    // (menus often have softly animated backgrounds).
     if cfg.interface.auto_hide {
         let sh = shared.clone();
-        let base = coarse(&frame);
+        let mut base = frame.clone();
         tokio::spawn(async move {
+            let mut changed = 0;
             loop {
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 if sh.interface_gen.load(Ordering::SeqCst) != gen {
                     return;
                 }
-                let Ok(f) = capture::capture(full) else { continue };
-                if coarse_diff(&base, &coarse(&f)) > 0.05 {
+                let Ok(f) = capture::capture_clean(&sh, full) else { continue };
+                capture::mask_overlay(&sh, &mut base, full);
+                let d = coarse_diff(&coarse(&base), &coarse(&f));
+                changed = if d > 0.06 { changed + 1 } else { 0 };
+                if changed >= 2 {
+                    tracing::info!(target: "interface", "экран изменился ({d:.3}) — прячу перевод");
                     if sh.interface_gen.load(Ordering::SeqCst) == gen {
                         sh.interface_gen.fetch_add(1, Ordering::SeqCst);
                         sh.ui(|u| u.interface = None);

@@ -72,6 +72,23 @@ pub fn detect(s: &str) -> Option<Lang> {
     }
 }
 
+/// Does English text read like a sentence rather than a block of menu labels?
+/// Menus are Title Case ("Union Level", "Data Bank"); speech is mostly
+/// lower-case words.
+pub fn sentence_like_en(s: &str) -> bool {
+    let words: Vec<&str> = s
+        .split(|c: char| c.is_whitespace() || c == '/' || c == '|')
+        .filter(|w| w.chars().next().map_or(false, |c| c.is_alphabetic()))
+        .collect();
+    let lower = words.iter().filter(|w| w.chars().next().map_or(false, |c| c.is_lowercase())).count();
+    let ends = s.trim_end().ends_with(['.', '!', '?', '…', '"']);
+    if words.len() <= 2 {
+        lower >= 1 || ends
+    } else {
+        lower * 2 >= words.len()
+    }
+}
+
 /// Is this OCR result real subtitle text in `lang` (and not noise, icons or another script)?
 pub fn is_subtitle(s: &str, lang: Lang) -> bool {
     match lang {
@@ -79,7 +96,7 @@ pub fn is_subtitle(s: &str, lang: Lang) -> bool {
         Lang::En => {
             // At least one real word of 3+ letters and mostly letters.
             let has_word = s.split(|c: char| !is_latin_letter(c)).any(|w| w.chars().count() >= 3);
-            latin_count(s) >= 4 && latin_ratio(s) >= 0.55 && has_word
+            latin_count(s) >= 4 && latin_ratio(s) >= 0.55 && has_word && sentence_like_en(s)
         }
     }
 }
@@ -117,6 +134,14 @@ mod tests {
         assert!(!is_subtitle("少侠，此去开封", Lang::En));
         assert!(is_subtitle("少侠，此去开封", Lang::Zh));
         assert!(!is_subtitle("Hello there", Lang::Zh));
+        // Menu blocks seen in Wuthering Waves are not subtitles.
+        assert!(!is_subtitle("Birthday: Apr 26 Rank 8 SOL3 Phase Union Level Union EXP Expedition Guidebook Synthesis Motorbike", Lang::En));
+        assert!(!is_subtitle("Ambient Volume: Interface Volume Off Mute when Game is in the Background", Lang::En));
+        assert!(!is_subtitle("Resolution: Global Filter Image Display Mode Apply Recomme", Lang::En));
+        assert!(!is_subtitle("KURO: LGAMES", Lang::En));
+        assert!(is_subtitle("Jiyan: The frontline won't hold for long. We need reinforcements from Jinzhou by nightfall.", Lang::En));
+        assert!(is_subtitle("Thank you.", Lang::En));
+        assert!(is_subtitle("Jinhsi: Jinzhou stands because its people refuse to kneel. Remember that.", Lang::En));
     }
 
     #[test]

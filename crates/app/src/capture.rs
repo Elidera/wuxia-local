@@ -34,6 +34,23 @@ impl PxRect {
     }
 }
 
+/// Capture and blank out everything our overlay is drawing right now (dialogue
+/// plate, screen-translation labels, status badges). On some PCs Windows refuses
+/// to hide the overlay from capture, and then OCR would read our own Russian text.
+pub fn capture_clean(shared: &crate::state::Shared, r: PxRect) -> anyhow::Result<Frame> {
+    let mut f = capture(r)?;
+    mask_overlay(shared, &mut f, r);
+    Ok(f)
+}
+
+/// Blank the current overlay rectangles in a frame captured at `r`.
+pub fn mask_overlay(shared: &crate::state::Shared, f: &mut Frame, r: PxRect) {
+    let rects = shared.overlay_px.lock().unwrap().clone();
+    for [x, y, w, h] in rects {
+        f.mask(x - r.x - 4, y - r.y - 4, w + 8, h + 8);
+    }
+}
+
 pub fn capture(r: PxRect) -> anyhow::Result<Frame> {
     anyhow::ensure!(r.w > 0 && r.h > 0, "пустая область захвата");
     unsafe {

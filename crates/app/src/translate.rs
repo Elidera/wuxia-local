@@ -326,6 +326,9 @@ impl Translator {
         let raw = self.client.chat(&messages, &p, |_| {}).await?;
         drop(_slot);
         let parts = prompt::parse_batch_indexed(&raw, items.len());
+        if parts.iter().any(Option::is_none) {
+            tracing::info!(target: "translate", "пакет разобран не полностью, ответ модели: {}", raw.chars().take(600).collect::<String>());
+        }
         if parts.iter().all(Option::is_none) {
             return Err(anyhow!("пакетный ответ не удалось разобрать"));
         }
