@@ -247,11 +247,12 @@ mod app {
                     Some(o) => {
                         let (sh, tr, o) = (shared.clone(), tr.clone(), o.clone());
                         tokio::spawn(async move {
-                            // The panel would be photographed and "translated" too: hide it first.
+                            // The panel would be photographed and "translated" too: hide it
+                            // first and give Windows time to take it off the screen.
                             let was_open = sh.ui.lock().unwrap().panel_open;
                             if was_open && sh.ui.lock().unwrap().interface.is_none() {
                                 sh.ui(|u| u.panel_open = false);
-                                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
                             }
                             interface::toggle(sh, tr, o).await;
                         });
@@ -353,6 +354,18 @@ mod app {
                         u.ocr_status = Some(status);
                     });
                     shared.save_config();
+                }
+                Command::EditBox => {
+                    let on = shared.ui(|u| {
+                        u.edit_box = !u.edit_box;
+                        u.edit_box
+                    });
+                    if on {
+                        // Editing the window means the user wants to use it.
+                        shared.cfg.write().unwrap().dialogue.position = "box".into();
+                    }
+                    shared.save_config();
+                    tracing::info!("окно перевода: {}", if on { "настройка" } else { "готово" });
                 }
                 Command::TestOverlay => {
                     shared.ui(|u| u.test_overlay_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(10)));

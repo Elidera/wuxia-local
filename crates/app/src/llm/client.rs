@@ -53,7 +53,18 @@ impl LlmClient {
         if p.no_think {
             body["chat_template_kwargs"] = json!({"enable_thinking": false});
         }
-        let resp = self.http.post(format!("{}/v1/chat/completions", self.base)).json(&body).send().await?;
+        let url = format!("{}/v1/chat/completions", self.base);
+        let resp = match self.http.post(&url).json(&body).send().await {
+            Ok(r) => r,
+            // llama-server may close a kept-alive connection right as we reuse it
+            // ("error sending request" in logs): one quick retry on a fresh one.
+            Err(e) if e.is_request() || e.is_connect() => {
+                tracing::debug!("llama-server: повтор запроса после «{e}»");
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                self.http.post(&url).json(&body).send().await?
+            }
+            Err(e) => return Err(e.into()),
+        };
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();

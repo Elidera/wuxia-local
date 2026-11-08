@@ -121,7 +121,10 @@ impl AutoState {
         let mut new: Vec<(String, wuxia_core::image::Rect)> = Vec::new();
         let mut moved: Vec<(u64, wuxia_core::image::Rect)> = Vec::new();
         for (t, r) in &found {
-            if let Some(a) = self.active.iter_mut().find(|a| similarity::ratio(&a.src, t) > 0.9) {
+            // The same text read slightly differently (OCR jitter, a button partly
+            // covered by an icon) is still the same line: keep its translation.
+            let same = |a: &str| similarity::ratio(a, t) > 0.8 || similarity::is_growing(t, a) || similarity::is_growing(a, t);
+            if let Some(a) = self.active.iter_mut().find(|a| same(&a.src)) {
                 a.missed = 0;
                 moved.push((a.id, *r));
                 continue;

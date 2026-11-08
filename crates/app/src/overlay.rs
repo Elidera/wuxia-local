@@ -13,11 +13,15 @@
 //! * Every 500 ms it re-asserts "topmost": some games raise themselves above
 //!   other topmost windows when they get focus.
 //! * Layered windows updated this way are not seen by our BitBlt capture.
+//! * «Своё окно»: translations go into a box the user places. While editing
+//!   (Command::EditBox) the window stops being click-through: drag to move,
+//!   drag an edge or corner to resize, mouse wheel for the font size,
+//!   right click to finish.
 
 use crate::config::Config;
-use crate::state::{Shared, UiState};
+use crate::state::{Command, Shared, UiState};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -28,10 +32,13 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos, ShowWindow, TranslateMessage,
-    UpdateLayeredWindow, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetWindowLongPtrW, LoadCursorW, PeekMessageW, RegisterClassW,
+    SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE, HWND_TOPMOST,
+    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
+    SW_SHOWNOACTIVATE, ULW_ALPHA, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONUP,
+    WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use wuxia_core::raster::{self, Canvas, Rgba};
 
@@ -55,6 +62,10 @@ enum El {
     Label { rect: [f32; 4], text: String, bg: [u8; 3], fg: [u8; 3], plate: bool, font_scale: f32 },
     /// Interface Mode "list": all labels in one box on the right.
     List { text: String },
+    /// «Своё окно»: all current lines inside the user's box (speaker, text, still translating).
+    BoxPlate { rect: [f32; 4], lines: Vec<(Option<String>, String, bool)>, size_pt: f32, opacity: f32 },
+    /// The box while it is being moved / resized.
+    EditBox { rect: [f32; 4], size_pt: f32 },
     Badge { text: String, corner: Corner, size_pt: f32 },
 }
 
@@ -77,7 +88,31 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
     }
     let show_original = u.show_original;
     let opacity = cfg.dialogue.backdrop_opacity;
-    if let Some(view) = &u.interface {
+    let b = cfg.dialogue.box_rect;
+    let box_px = [b[0] * screen.0, b[1] * screen.1, b[2] * screen.0, b[3] * screen.1];
+    let in_box = cfg.dialogue.position == "box";
+    if u.edit_box {
+        out.push(El::EditBox { rect: box_px, size_pt: cfg.dialogue.font_size });
+    } else if u.interface.is_none() && in_box {
+        let mut lines = Vec::new();
+        if cfg.dialogue.mode == "auto" {
+            for l in &u.auto_lines {
+                if let Some((body, dim)) = plate_text(&l.source, &l.translation, l.pending, None, show_original) {
+                    lines.push((if show_original { None } else { l.speaker.clone() }, body, dim));
+                }
+            }
+        } else if let Some(d) = &u.dialogue {
+            if let Some((body, dim)) = plate_text(&d.source, &d.translation, d.pending, d.error.as_ref(), show_original) {
+                lines.push((if show_original { None } else { d.speaker.clone() }, body, dim));
+            }
+        }
+        if !lines.is_empty() {
+            out.push(El::BoxPlate { rect: box_px, lines, size_pt: cfg.dialogue.font_size, opacity });
+        }
+    }
+    if u.edit_box || (u.interface.is_none() && in_box) {
+        // Already placed in the box above.
+    } else if let Some(view) = &u.interface {
         if !show_original {
             if cfg.interface.mode == "list" {
                 let text: Vec<String> = view.items.iter().map(|it| format!("{}  —  {}", it.src, it.dst.as_deref().unwrap_or("…"))).collect();
@@ -171,6 +206,15 @@ struct Op {
     fill: Rgba,
     radius: f32,
     texts: Vec<TextJob>,
+    /// Plain rectangles drawn over the fill (frame and handles of the edited box).
+    extras: Vec<[i32; 4]>,
+    extra_color: Rgba,
+}
+
+impl Op {
+    fn new(rect: [i32; 4], fill: Rgba, radius: f32, texts: Vec<TextJob>) -> Op {
+        Op { rect, fill, radius, texts, extras: Vec::new(), extra_color: Rgba(0, 0, 0, 0) }
+    }
 }
 
 const PARA: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_CENTER.0 | DT_WORDBREAK.0 | DT_NOPREFIX.0);
@@ -226,7 +270,79 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                 color: if *dim { Rgba(225, 225, 225, 255) } else { Rgba(250, 246, 235, 255) },
                 outline,
             });
-            Some(Op { rect: [x, y, pw, ph], fill: Rgba(0, 0, 0, alpha(a)), radius: 8.0 * s, texts })
+            Some(Op::new([x, y, pw, ph], Rgba(0, 0, 0, alpha(a)), 8.0 * s, texts))
+        }
+        El::BoxPlate { rect, lines, size_pt, opacity } => {
+            let px = (size_pt * s).round().max(8.0) as i32;
+            let (padx, pady) = ((16.0 * s) as i32, (10.0 * s) as i32);
+            let [bx, by, bw, bh] = rect.map(|v| v as i32);
+            let inner = (bw - 2 * padx).max(80);
+            let gap = px / 2;
+            let outline = Some((Rgba(0, 0, 0, 200), (1.5 * s).round() as i32));
+            // Measure every line first, then centre the whole block in the box.
+            let mut parts: Vec<(String, bool, Rgba, i32, i32)> = Vec::new();
+            for (i, (speaker, body, dim)) in lines.iter().enumerate() {
+                if let Some(sp) = speaker {
+                    let (w, h) = g.measure(sp, px, true, PARA, inner);
+                    parts.push((sp.clone(), true, Rgba(240, 200, 120, 255), w, h));
+                }
+                let (w, h) = g.measure(body, px, false, PARA, inner);
+                let color = if *dim { Rgba(225, 225, 225, 255) } else { Rgba(250, 246, 235, 255) };
+                // The gap after a line is stored in its height.
+                let extra = if i + 1 < lines.len() { gap } else { 0 };
+                parts.push((body.clone(), false, color, w, h + extra));
+            }
+            let content: i32 = parts.iter().map(|p| p.4).sum();
+            let h = bh.max(content + 2 * pady);
+            let y0 = by.min(screen.1 as i32 - h).max(0);
+            let mut y = y0 + (h - content) / 2;
+            let mut texts = Vec::new();
+            for (text, bold, color, w, ph) in parts {
+                texts.push(TextJob { text, px, bold, flags: PARA, x: bx + (bw - w) / 2, y, w: w + 2, h: ph, color, outline });
+                y += ph;
+            }
+            Some(Op::new([bx, y0, bw, h], Rgba(0, 0, 0, alpha(*opacity)), 8.0 * s, texts))
+        }
+        El::EditBox { rect, size_pt } => {
+            let [bx, by, bw, bh] = rect.map(|v| v as i32);
+            let px = (size_pt * s).round().max(8.0) as i32;
+            let small = (13.0 * s) as i32;
+            let help = "Перетащите окно мышью · край или угол — размер · колесо — шрифт · правый клик — готово";
+            let inner = (bw - (20.0 * s) as i32).max(80);
+            let (hw, hh) = g.measure(help, small, false, PARA, inner);
+            let sample = "Пример перевода: так будет выглядеть реплика.";
+            let (sw, sh) = g.measure(sample, px, false, PARA, inner);
+            let top = by + (6.0 * s) as i32;
+            let texts = vec![
+                TextJob { text: help.into(), px: small, bold: false, flags: PARA, x: bx + (bw - hw) / 2, y: top, w: hw + 2, h: hh, color: Rgba(255, 225, 160, 255), outline: None },
+                TextJob {
+                    text: sample.into(),
+                    px,
+                    bold: false,
+                    flags: PARA,
+                    x: bx + (bw - sw) / 2,
+                    y: (by + bh / 2 - sh / 2).max(top + hh),
+                    w: sw + 2,
+                    h: sh,
+                    color: Rgba(250, 246, 235, 255),
+                    outline: Some((Rgba(0, 0, 0, 200), 1)),
+                },
+            ];
+            let t = (2.0 * s).max(2.0) as i32;
+            let k = (12.0 * s) as i32;
+            let mut op = Op::new([bx, by, bw, bh], Rgba(24, 26, 34, 200), 6.0 * s, texts);
+            op.extras = vec![
+                [bx, by, bw, t],
+                [bx, by + bh - t, bw, t],
+                [bx, by, t, bh],
+                [bx + bw - t, by, t, bh],
+                [bx, by, k, k],
+                [bx + bw - k, by, k, k],
+                [bx, by + bh - k, k, k],
+                [bx + bw - k, by + bh - k, k, k],
+            ];
+            op.extra_color = Rgba(232, 184, 92, 255);
+            Some(op)
         }
         El::Label { rect, text, bg, fg, plate, font_scale } => {
             let [x, y, w, h] = *rect;
@@ -257,7 +373,7 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                 color,
                 outline: None,
             };
-            Some(Op { rect: cover, fill, radius, texts: vec![job] })
+            Some(Op::new(cover, fill, radius, vec![job]))
         }
         El::List { text } => {
             let px = (15.0 * s) as i32;
@@ -267,7 +383,7 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
             let x = screen.0 as i32 - w - (36.0 * s) as i32;
             let y = (60.0 * s) as i32;
             let job = TextJob { text: text.clone(), px, bold: false, flags: LEFT_PARA, x: x + pad, y: y + pad, w: tw + 2, h: th, color: Rgba(255, 255, 255, 255), outline: None };
-            Some(Op { rect: [x, y, w, h], fill: Rgba(0, 0, 0, 215), radius: 8.0 * s, texts: vec![job] })
+            Some(Op::new([x, y, w, h], Rgba(0, 0, 0, 215), 8.0 * s, vec![job]))
         }
         El::Badge { text, corner, size_pt } => {
             let px = (size_pt * s).round() as i32;
@@ -295,7 +411,7 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                 color: if *corner == Corner::Center { Rgba(255, 225, 160, 255) } else { Rgba(255, 240, 210, 255) },
                 outline: None,
             };
-            Some(Op { rect: [x, y, w, h], fill: Rgba(0, 0, 0, fill), radius, texts: vec![job] })
+            Some(Op::new([x, y, w, h], Rgba(0, 0, 0, fill), radius, vec![job]))
         }
     }
 }
@@ -404,14 +520,161 @@ unsafe fn dib(dc: HDC, w: i32, h: i32) -> Option<(windows::Win32::Graphics::Gdi:
 
 // ---------------------------------------------------------------- window
 
+static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
+
+/// A mouse drag of the box in progress: which edges move (0 = the whole box).
+#[derive(Clone, Copy)]
+struct Drag {
+    zone: u8,
+    x0: i32,
+    y0: i32,
+    start: [f32; 4],
+}
+
+static DRAG: Mutex<Option<Drag>> = Mutex::new(None);
+
+const LEFT: u8 = 1;
+const RIGHT: u8 = 2;
+const TOP: u8 = 4;
+const BOTTOM: u8 = 8;
+
+fn cursor() -> (i32, i32) {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    (p.x, p.y)
+}
+
+/// The box in screen pixels.
+fn box_px(sh: &Shared) -> [f32; 4] {
+    let (sw, shh) = crate::win::screen_size();
+    let b = sh.cfg.read().unwrap().dialogue.box_rect;
+    [b[0] * sw as f32, b[1] * shh as f32, b[2] * sw as f32, b[3] * shh as f32]
+}
+
+/// Which edges of `r` are under the point (within `m` pixels of the border).
+fn zone_at(r: [f32; 4], x: i32, y: i32, m: f32) -> u8 {
+    let (x, y) = (x as f32, y as f32);
+    let mut z = 0;
+    if x < r[0] + m {
+        z |= LEFT;
+    } else if x > r[0] + r[2] - m {
+        z |= RIGHT;
+    }
+    if y < r[1] + m {
+        z |= TOP;
+    } else if y > r[1] + r[3] - m {
+        z |= BOTTOM;
+    }
+    z
+}
+
+/// New box after dragging by (dx, dy), kept on screen and not too small.
+fn dragged(d: &Drag, dx: f32, dy: f32, screen: (f32, f32)) -> [f32; 4] {
+    let [mut x0, mut y0, w, h] = d.start;
+    let (mut x1, mut y1) = (x0 + w, y0 + h);
+    let (min_w, min_h) = (160.0, 48.0);
+    if d.zone == 0 {
+        let nx = (x0 + dx).clamp(0.0, (screen.0 - w).max(0.0));
+        let ny = (y0 + dy).clamp(0.0, (screen.1 - h).max(0.0));
+        return [nx, ny, w, h];
+    }
+    if d.zone & LEFT != 0 {
+        x0 = (x0 + dx).clamp(0.0, x1 - min_w);
+    }
+    if d.zone & RIGHT != 0 {
+        x1 = (x1 + dx).clamp(x0 + min_w, screen.0);
+    }
+    if d.zone & TOP != 0 {
+        y0 = (y0 + dy).clamp(0.0, y1 - min_h);
+    }
+    if d.zone & BOTTOM != 0 {
+        y1 = (y1 + dy).clamp(y0 + min_h, screen.1);
+    }
+    [x0, y0, x1 - x0, y1 - y0]
+}
+
+/// Mouse handling while the box is being edited (the window is click-through otherwise).
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+    unsafe {
+        let Some(sh) = SHARED.get() else { return DefWindowProcW(hwnd, msg, wp, lp) };
+        let margin = 14.0 * (GetDpiForWindow(hwnd).max(96) as f32 / 96.0);
+        match msg {
+            // Clicks must not take the focus away from the game.
+            WM_MOUSEACTIVATE => return LRESULT(3), // MA_NOACTIVATE
+            WM_SETCURSOR => {
+                let (x, y) = cursor();
+                let drag = *DRAG.lock().unwrap();
+                let z = match drag {
+                    Some(d) => d.zone,
+                    None => zone_at(box_px(sh), x, y, margin),
+                };
+                let id = match z {
+                    0 => IDC_SIZEALL,
+                    LEFT | RIGHT => IDC_SIZEWE,
+                    TOP | BOTTOM => IDC_SIZENS,
+                    z if z == LEFT | TOP || z == RIGHT | BOTTOM => IDC_SIZENWSE,
+                    _ => IDC_SIZENESW,
+                };
+                if let Ok(c) = LoadCursorW(None, id) {
+                    SetCursor(c);
+                }
+                return LRESULT(1);
+            }
+            WM_LBUTTONDOWN => {
+                let (x, y) = cursor();
+                let r = box_px(sh);
+                *DRAG.lock().unwrap() = Some(Drag { zone: zone_at(r, x, y, margin), x0: x, y0: y, start: r });
+                SetCapture(hwnd);
+                return LRESULT(0);
+            }
+            WM_MOUSEMOVE => {
+                let d = *DRAG.lock().unwrap();
+                if let Some(d) = d {
+                    let (x, y) = cursor();
+                    let (sw, shh) = crate::win::screen_size();
+                    let screen = (sw as f32, shh as f32);
+                    let r = dragged(&d, (x - d.x0) as f32, (y - d.y0) as f32, screen);
+                    sh.cfg.write().unwrap().dialogue.box_rect = [r[0] / screen.0, r[1] / screen.1, r[2] / screen.0, r[3] / screen.1];
+                }
+                return LRESULT(0);
+            }
+            WM_LBUTTONUP => {
+                if DRAG.lock().unwrap().take().is_some() {
+                    let _ = ReleaseCapture();
+                    sh.send(Command::SaveConfig);
+                }
+                return LRESULT(0);
+            }
+            WM_RBUTTONUP => {
+                if sh.ui.lock().unwrap().edit_box {
+                    sh.send(Command::EditBox); // finish editing
+                }
+                return LRESULT(0);
+            }
+            WM_MOUSEWHEEL => {
+                let delta = ((wp.0 >> 16) & 0xFFFF) as u16 as i16;
+                {
+                    let mut c = sh.cfg.write().unwrap();
+                    let step = if delta > 0 { 1.0 } else { -1.0 };
+                    c.dialogue.font_size = (c.dialogue.font_size + step).clamp(14.0, 56.0);
+                }
+                sh.send(Command::SaveConfig);
+                return LRESULT(0);
+            }
+            _ => {}
+        }
+        DefWindowProcW(hwnd, msg, wp, lp)
+    }
 }
 
 struct Window {
     hwnd: HWND,
     gdi: Gdi,
     shown: bool,
+    /// Not click-through (the box is being edited).
+    interactive: bool,
     ulw_errors: u32,
     first_show_logged: bool,
 }
@@ -436,7 +699,7 @@ impl Window {
             hinst,
             None,
         )?;
-        Ok(Window { hwnd, gdi: Gdi::new(), shown: false, ulw_errors: 0, first_show_logged: false })
+        Ok(Window { hwnd, gdi: Gdi::new(), shown: false, interactive: false, ulw_errors: 0, first_show_logged: false })
     }
 
     fn scale(&self) -> f32 {
@@ -446,6 +709,23 @@ impl Window {
         } else {
             dpi as f32 / 96.0
         }
+    }
+
+    /// Click-through normally; takes the mouse while the box is being edited.
+    fn set_interactive(&mut self, on: bool) {
+        if self.interactive == on {
+            return;
+        }
+        unsafe {
+            let ex = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            let t = WS_EX_TRANSPARENT.0 as isize;
+            SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, if on { ex & !t } else { ex | t });
+            if !on && DRAG.lock().unwrap().take().is_some() {
+                let _ = ReleaseCapture();
+            }
+            self.raise();
+        }
+        self.interactive = on;
     }
 
     unsafe fn raise(&self) {
@@ -487,6 +767,9 @@ impl Window {
                 let mut c = Canvas::new(bw, bh, buf);
                 for (o, ms) in ops.iter().zip(&masks) {
                     c.fill_round_rect(o.rect[0] - bx, o.rect[1] - by, o.rect[2], o.rect[3], o.radius, o.fill);
+                    for e in &o.extras {
+                        c.fill_round_rect(e[0] - bx, e[1] - by, e[2], e[3], 0.0, o.extra_color);
+                    }
                     for (t, m) in o.texts.iter().zip(ms) {
                         let Some(m) = m else { continue };
                         let (x, y, w, h) = (t.x - bx, t.y - by, t.w.max(1), t.h.max(1));
@@ -540,6 +823,7 @@ impl Window {
 /// Start the overlay thread. It polls the shared state ~30 times a second and
 /// redraws only when what should be shown has changed.
 pub fn spawn(shared: Arc<Shared>) {
+    let _ = SHARED.set(shared.clone());
     let r = std::thread::Builder::new().name("overlay".into()).spawn(move || {
         let mut w = match unsafe { Window::create() } {
             Ok(w) => w,
@@ -571,10 +855,11 @@ pub fn spawn(shared: Arc<Shared>) {
             }
             let screen = crate::win::screen_size();
             let scale = w.scale();
-            let els = {
+            let (els, editing) = {
                 let u = shared.ui.lock().unwrap();
-                scene(&u, &cfg, (screen.0 as f32, screen.1 as f32), scale)
+                (scene(&u, &cfg, (screen.0 as f32, screen.1 as f32), scale), u.edit_box)
             };
+            w.set_interactive(editing);
             if last.as_ref().map_or(true, |(e, s)| *e != els || *s != screen) {
                 let rects = w.render(&els, screen);
                 *shared.overlay_px.lock().unwrap() = rects;

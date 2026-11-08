@@ -89,6 +89,37 @@ pub fn sentence_like_en(s: &str) -> bool {
     }
 }
 
+/// Russian text read by the English OCR turns into Latin look-alikes with
+/// capitals inside words: «Поиск» → "noøcK", «Справка» → "CnpaBKa",
+/// «Нейросеть» → "HeipoceTb". Real English almost never has a capital after a
+/// lower-case letter inside a word (rare "iPhone", "McDonald").
+fn has_inner_capital(w: &str) -> bool {
+    let mut seen_lower = false;
+    for c in w.chars() {
+        if c.is_lowercase() {
+            seen_lower = true;
+        } else if c.is_uppercase() && seen_lower {
+            return true;
+        }
+    }
+    false
+}
+
+/// Share of 3+-letter words that look like misread Cyrillic (see `has_inner_capital`).
+pub fn misread_share(s: &str) -> f32 {
+    let words: Vec<&str> = s.split(|c: char| !is_latin_letter(c)).filter(|w| w.chars().count() >= 3).collect();
+    if words.is_empty() {
+        return 0.0;
+    }
+    words.iter().filter(|w| has_inner_capital(w)).count() as f32 / words.len() as f32
+}
+
+fn looks_misread(s: &str) -> bool {
+    let share = misread_share(s);
+    let words = s.split_whitespace().count();
+    share > 0.0 && (words <= 4 || share >= 0.2)
+}
+
 /// Is this OCR result real subtitle text in `lang` (and not noise, icons or another script)?
 pub fn is_subtitle(s: &str, lang: Lang) -> bool {
     match lang {
@@ -96,7 +127,7 @@ pub fn is_subtitle(s: &str, lang: Lang) -> bool {
         Lang::En => {
             // At least one real word of 3+ letters and mostly letters.
             let has_word = s.split(|c: char| !is_latin_letter(c)).any(|w| w.chars().count() >= 3);
-            latin_count(s) >= 4 && latin_ratio(s) >= 0.55 && has_word && sentence_like_en(s)
+            latin_count(s) >= 4 && latin_ratio(s) >= 0.55 && has_word && sentence_like_en(s) && !looks_misread(s)
         }
     }
 }
@@ -107,7 +138,7 @@ pub fn is_label(s: &str, lang: Lang) -> bool {
         Lang::Zh => text::has_han(s),
         Lang::En => {
             let has_word = s.split(|c: char| !is_latin_letter(c)).any(|w| w.chars().count() >= 2 && w.chars().any(|c| "aeiouyAEIOUY".contains(c)));
-            latin_count(s) >= 2 && latin_ratio(s) >= 0.5 && has_word
+            latin_count(s) >= 2 && latin_ratio(s) >= 0.5 && has_word && !looks_misread(s)
         }
     }
 }
@@ -142,6 +173,18 @@ mod tests {
         assert!(is_subtitle("Jiyan: The frontline won't hold for long. We need reinforcements from Jinzhou by nightfall.", Lang::En));
         assert!(is_subtitle("Thank you.", Lang::En));
         assert!(is_subtitle("Jinhsi: Jinzhou stands because its people refuse to kneel. Remember that.", Lang::En));
+    }
+
+    #[test]
+    fn misread_russian_is_not_english() {
+        for s in ["p noøcK", "CnpaBKa", "HeipoceTb Songtell...", "rnaBHas", "LIJMH0 naHopaua -.", "Hy-MT2 1.8B Q4_K_M — 6blCTpblä YMonqaHmo)"] {
+            assert!(!is_subtitle(s, Lang::En), "{s}");
+            assert!(!is_label(s, Lang::En), "{s}");
+        }
+        assert!(is_subtitle("There's nothing quite like being on duty in a bustling commercial area.", Lang::En));
+        assert!(is_subtitle("I bought a new iPhone, and it was worth every coin I had saved.", Lang::En));
+        assert!(is_label("Data Bank", Lang::En));
+        assert!(is_label("SOL3 Phase", Lang::En));
     }
 
     #[test]

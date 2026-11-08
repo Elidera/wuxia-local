@@ -420,7 +420,7 @@ fn header(ui: &mut Ui, shared: &Arc<Shared>) {
             match server {
                 Some(s) if s.is_ready() => {
                     if dialogue_on && paused {
-                        status_pill(ui, "Пауза: игра не активна", YELLOW)
+                        status_pill(ui, "Ждёт окно игры", YELLOW)
                     } else {
                         status_pill(ui, "Готов", GREEN)
                     }
@@ -511,7 +511,7 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             shared.send(Command::ToggleDialogue);
         }
         if big_action(ui, "Перевести экран", "Меню, задания, предметы — по нажатию", &hk.screen_translate, has_interface, w) {
-            shared.send(Command::TogglePanel);
+            // ScreenTranslate hides the panel itself and waits until it is off the screen.
             shared.send(Command::ScreenTranslate);
         }
     });
@@ -637,7 +637,7 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         c.apply_profile();
     }
 
-    any |= search_card(ui, "Перевод субтитров", "где искать текст весь экран авто только область субтитров частота чтения экрана нагрузка процессор размер шрифта затемнение подложки где показывать перевод поверх над под субтитрами помнить реплик контекста связности диалога отделять имя говорящего реплика пожелание к стилю qwen", |ui| {
+    any |= search_card(ui, "Перевод субтитров", "своё окно перевода переместить изменить размер двигать где искать текст весь экран авто только область субтитров частота чтения экрана нагрузка процессор размер шрифта затемнение подложки где показывать перевод поверх над под субтитрами помнить реплик контекста связности диалога отделять имя говорящего реплика пожелание к стилю qwen", |ui| {
         let d = &mut c.dialogue;
         dirty |= setting_row(ui, "Где искать текст", "Весь экран (авто) — без выбора области; область — только выделенная полоса субтитров", |ui| {
             segmented(ui, &mut d.mode, &[("auto", "Весь экран (авто)"), ("region", "Только область")])
@@ -651,9 +651,16 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         dirty |= setting_row(ui, "Затемнение подложки", "0 — без подложки", |ui| {
             ui.add(egui::Slider::new(&mut d.backdrop_opacity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0} %", v * 100.0))).changed()
         });
-        dirty |= setting_row(ui, "Где показывать перевод", "Поверх, над или под субтитрами игры", |ui| {
-            segmented(ui, &mut d.position, &[("over", "Поверх"), ("above", "Над"), ("below", "Под")])
+        dirty |= setting_row(ui, "Где показывать перевод", "Поверх, над, под субтитрами игры — или в своём окне, которое можно двигать", |ui| {
+            segmented(ui, &mut d.position, &[("box", "Своё окно"), ("over", "Поверх"), ("above", "Над"), ("below", "Под")])
         });
+        let editing = shared.ui.lock().unwrap().edit_box;
+        if setting_row(ui, "Окно перевода", "Перетащите мышью, тяните за край — размер, колесо — шрифт. Правый клик или кнопка — готово", |ui| {
+            let label = if editing { "Готово" } else { "Переместить / изменить размер" };
+            ui.add(egui::Button::new(RichText::new(label).color(Color32::BLACK)).fill(GOLD)).clicked()
+        }) {
+            shared.send(Command::EditBox);
+        }
         dirty |= setting_row(ui, "Помнить реплик для контекста", "Помогает связности диалога", |ui| ui.add(egui::Slider::new(&mut d.context_lines, 0..=6)).changed());
         dirty |= setting_row(ui, "Отделять имя говорящего", "«Имя：реплика» — имя переводится отдельно", |ui| toggle(ui, &mut d.split_speaker).changed());
         dirty |= setting_row(ui, "Пожелание к стилю", "Только для моделей Qwen", |ui| {
@@ -686,9 +693,8 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         dirty |= setting_row(ui, "Скрывать при смене экрана", "Перевод исчезает, когда меню закрылось", |ui| toggle(ui, &mut i.auto_hide).changed());
     });
 
-    any |= search_card(ui, "Прочее", "пауза игра не активна экономит процессор видно на скриншотах скриншот перевод использовать видеокарту тормозит модель процессор", |ui| {
+    any |= search_card(ui, "Прочее", "видно на скриншотах скриншот перевод использовать видеокарту тормозит модель процессор", |ui| {
         let g = &mut c.general;
-        dirty |= setting_row(ui, "Пауза, когда игра не активна", "Экономит процессор", |ui| toggle(ui, &mut g.pause_when_unfocused).changed());
         dirty |= setting_row(ui, "Видно на скриншотах", "Включайте, чтобы сделать скриншот с переводом", |ui| toggle(ui, &mut g.visible_in_screenshots).changed());
         let l = &mut c.llm;
         let mut gpu = l.gpu_layers > 0;

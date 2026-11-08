@@ -29,6 +29,7 @@ pub struct General {
     /// Substrings of the game window title separated by `|`. Capture pauses while
     /// another window is in the foreground. Empty = always active.
     pub window_match: String,
+    /// Kept for old config files; translation now always waits for the game window.
     pub pause_when_unfocused: bool,
     /// Show the overlay and the panel on screenshots (Win+Shift+S, OBS).
     /// Off by default: then they can never get into our own OCR.
@@ -125,8 +126,11 @@ pub struct Dialogue {
     pub preprocess: String,
     pub context_lines: usize,
     pub show_original: bool,
-    /// "below", "above" or "over" the source subtitles.
+    /// "below", "above" or "over" the source subtitles, or "box": in the user's
+    /// own window (`box_rect`), moved and resized on screen.
     pub position: String,
+    /// The user's translation window as fractions of the primary screen: [x, y, w, h].
+    pub box_rect: [f32; 4],
     pub font_size: f32,
     pub backdrop_opacity: f32,
     pub stable_frames: u32,
@@ -303,6 +307,7 @@ impl Default for Dialogue {
             context_lines: 3,
             show_original: false,
             position: "below".into(),
+            box_rect: [0.2, 0.74, 0.6, 0.13],
             font_size: 26.0,
             backdrop_opacity: 0.72,
             stable_frames: 2,
