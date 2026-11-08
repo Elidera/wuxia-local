@@ -33,6 +33,8 @@ pub struct AutoState {
     /// Where real dialogue lines appeared (for finding the subtitle area).
     zone_samples: Vec<Rect>,
     zone_announced: bool,
+    /// Scans skipped while «Поверх» looks under the plates only now and then.
+    skipped: u32,
 }
 
 /// Lines on screen at once; more is clutter (and model time).
@@ -81,7 +83,22 @@ impl AutoState {
         let lang = cfg.source_lang();
         // Only the game's own picture: no taskbar, desktop or other windows.
         let area: PxRect = capture::game_area(&cfg);
-        let frame = match capture::capture_clean(shared, area) {
+        // «Поверх» on a PC where Windows does not hide the overlay from capture:
+        // our plates cover the original, so now and then (every third scan) the
+        // overlay is hidden for a moment to read what is under it.
+        let peek = cfg.dialogue.position == "over" && *shared.overlay_in_capture.lock().unwrap() == Some(true) && !self.active.is_empty();
+        if peek {
+            self.skipped += 1;
+            if self.skipped % 3 != 0 {
+                return;
+            }
+            hide_overlay_briefly(shared).await;
+        }
+        let frame = capture::capture_clean(shared, area);
+        if peek {
+            shared.hide_overlay.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        let frame = match frame {
             Ok(f) => f,
             Err(e) => {
                 tracing::debug!(target: "dialogue", "авто: захват: {e}");
@@ -128,12 +145,13 @@ impl AutoState {
                 moved.push((a.id, *r));
                 continue;
             }
-            if self.prev.iter().any(|p| similarity::ratio(p, t) > 0.95) {
+            // Looking under the plates happens only every ~1.5 s: no need to wait for a second read.
+            if peek || self.prev.iter().any(|p| similarity::ratio(p, t) > 0.95) {
                 new.push((t.clone(), *r));
             }
         }
         self.prev = found.into_iter().map(|(t, _)| t).collect();
-        self.active.retain(|a| a.missed < 2);
+        self.active.retain(|a| a.missed < if peek { 1 } else { 2 });
         let room = MAX_LINES.saturating_sub(self.active.len());
         let mut started: Vec<AutoLine> = Vec::new();
         let mut learned = false;
@@ -169,6 +187,20 @@ impl AutoState {
     }
 }
 
+/// Ask the overlay thread to hide and wait until the screen no longer shows it.
+async fn hide_overlay_briefly(shared: &Shared) {
+    use std::sync::atomic::Ordering;
+    shared.hide_overlay.store(true, Ordering::SeqCst);
+    for _ in 0..30 {
+        if shared.overlay_hidden.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // One or two compositor frames until the hidden window is off the screen.
+    tokio::time::sleep(std::time::Duration::from_millis(35)).await;
+}
+
 /// Speech-like text blocks on a whole-screen OCR result, as they will be
 /// translated: "Name: text" when a speaker name sits above the line.
 /// Shared by the game loop and the screenshot tests (`--selftest`).
@@ -200,11 +232,12 @@ pub fn speech_blocks(lines: &[ocr::OcrLine], lang: lang::Lang, tr: &Translator) 
                 lang::Lang::En => text::looks_like_speaker_en(name) && name.split_whitespace().count() <= 3,
                 lang::Lang::Zh => (1..=6).contains(&text::han_count(name)) && text::han_ratio(name) > 0.8,
             };
-            ok.then(|| name.to_string())
+            ok.then(|| (name.to_string(), sr))
         });
         match speaker {
-            Some(name) if !t.contains(':') && !t.contains('：') => {
-                found.push((format!("{name}: {t}"), r));
+            // The block covers the name too: «Поверх» hides both.
+            Some((name, sr)) if !t.contains(':') && !t.contains('：') => {
+                found.push((format!("{name}: {t}"), r.union(&sr)));
             }
             _ => found.push((t, r)),
         }

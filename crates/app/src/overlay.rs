@@ -21,6 +21,7 @@
 use crate::config::Config;
 use crate::state::{Command, Shared, UiState};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::{HSTRING, PCWSTR};
@@ -249,10 +250,18 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
             };
             let (padx, pady) = ((14.0 * s) as i32, (8.0 * s) as i32);
             let (tw, th) = (bw.max(sw), bh + sh);
-            let (pw, ph) = (tw + 2 * padx, th + 2 * pady);
+            let (mut pw, mut ph) = (tw + 2 * padx, th + 2 * pady);
+            if position == "over" {
+                // Replace the original: cover it completely (with a margin for the
+                // glow around game text), the translation centred inside.
+                let m = 8.0 * s;
+                pw = pw.max((anchor[2] + 2.0 * m) as i32);
+                ph = ph.max((anchor[3] + 2.0 * m) as i32);
+            }
             let r = raster::place_plate(*anchor, (pw as f32, ph as f32), position, screen, 6.0 * s);
             let (x, y) = (r[0] as i32, r[1] as i32);
-            let a = if position == "over" { opacity.max(0.92) } else { *opacity };
+            let top = (ph - th) / 2;
+            let a = if position == "over" { opacity.max(0.95) } else { *opacity };
             let outline = look.outline.then(|| (Rgba(0, 0, 0, 200), (1.5 * s).round().max(1.0) as i32));
             let text_color = |dim: bool| {
                 let [r, g, b] = look.color;
@@ -271,7 +280,7 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                     bold: true,
                     flags: PARA,
                     x: x + (pw - sw) / 2,
-                    y: y + pady,
+                    y: y + top,
                     w: sw + 2,
                     h: sh,
                     color: name_color,
@@ -284,7 +293,7 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                 bold: false,
                 flags: PARA,
                 x: x + (pw - bw) / 2,
-                y: y + pady + sh,
+                y: y + top + sh,
                 w: bw + 2,
                 h: bh,
                 color: text_color(*dim),
@@ -777,8 +786,9 @@ impl Window {
         }
     }
 
-    /// Lay out, draw and show `els`. Returns the screen rectangles drawn.
-    fn render(&mut self, els: &[El], screen: (i32, i32), face: &str) -> Vec<[i32; 4]> {
+    /// Lay out, draw and show `els`. Returns the screen rectangles drawn and
+    /// where the marker pixel is.
+    fn render(&mut self, els: &[El], screen: (i32, i32), face: &str) -> (Vec<[i32; 4]>, Option<(i32, i32)>) {
         self.gdi.set_face(face);
         // Text grows with the screen: font 26 is meant for 1080p, on 1440p and 4K
         // it would be tiny when Windows scaling is left at 100 %.
@@ -788,8 +798,9 @@ impl Window {
         let rects: Vec<[i32; 4]> = ops.iter().map(|o| o.rect).collect();
         let Some([bx, by, bw, bh]) = raster::union_rect(&rects, screen) else {
             self.hide();
-            return rects;
+            return (rects, None);
         };
+        let mut probe: Option<(i32, i32)> = None;
         // Text masks first (they use the shared GDI DC), then compose.
         let masks: Vec<Vec<Option<Vec<u8>>>> = ops.iter().map(|o| o.texts.iter().map(|t| self.gdi.mask(t)).collect()).collect();
         unsafe {
@@ -798,7 +809,7 @@ impl Window {
             let Some((bmp, bits)) = dib(dc, bw, bh) else {
                 let _ = windows::Win32::Graphics::Gdi::DeleteDC(dc);
                 ReleaseDC(HWND::default(), screen_dc);
-                return rects;
+                return (rects, None);
             };
             let old = SelectObject(dc, bmp);
             {
@@ -816,6 +827,21 @@ impl Window {
                             Some((sh, d)) => c.draw_mask_outlined(m, w, h, x, y, t.color, sh, d),
                             None => c.draw_mask(m, w, h, x, y, t.color),
                         }
+                    }
+                }
+            }
+            // Marker pixels (see `capture::overlay_seen`) inside the first dark plate.
+            probe = ops.iter().find(|o| o.fill.3 >= 150 && (o.fill.0 as u16 + o.fill.1 as u16 + o.fill.2 as u16) < 90 && o.rect[2] > 40 && o.rect[3] > 12).map(|o| {
+                (o.rect[0] + o.rect[2] / 2, o.rect[1] + 2)
+            });
+            if let Some((px, py)) = probe {
+                let buf = std::slice::from_raw_parts_mut(bits, (bw * bh * 4) as usize);
+                let [b, g, r] = crate::capture::PROBE_BGR;
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (x, y) = (px - bx + dx, py - by + dy);
+                    if x >= 0 && y >= 0 && x < bw && y < bh {
+                        let i = ((y * bw + x) * 4) as usize;
+                        buf[i..i + 4].copy_from_slice(&[b, g, r, 255]);
                     }
                 }
             }
@@ -843,7 +869,7 @@ impl Window {
                 if self.ulw_errors <= 3 {
                     tracing::warn!("оверлей: UpdateLayeredWindow: {e}");
                 }
-                return rects;
+                return (rects, None);
             }
             if !self.shown {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -855,7 +881,7 @@ impl Window {
                 }
             }
         }
-        rects
+        (rects, probe)
     }
 }
 
@@ -884,14 +910,27 @@ pub fn spawn(shared: Arc<Shared>) {
                 }
             }
             let cfg = shared.cfg();
-            let want = cfg.general.visible_in_screenshots;
+            // «Поверх»: the plate covers the original text, so our own capture must
+            // see through it — the overlay is hidden from capture in this mode.
+            let want = cfg.general.visible_in_screenshots && cfg.dialogue.position != "over";
             if applied_visibility != Some(want) {
                 match crate::win::set_capture_visible(w.hwnd.0 as isize, want) {
                     Ok(()) => tracing::info!("оверлей: видимость на скриншотах = {want}"),
-                    Err(e) => tracing::info!("оверлей: видимость на скриншотах не изменена ({e}); на распознавание это не влияет"),
+                    Err(e) => tracing::info!("оверлей: видимость на скриншотах не изменена ({e})"),
                 }
                 applied_visibility = Some(want);
+                *shared.overlay_in_capture.lock().unwrap() = None; // check again
             }
+            // A reader wants to look under the plates for a moment.
+            if shared.hide_overlay.load(Ordering::SeqCst) {
+                w.hide();
+                *shared.overlay_probe.lock().unwrap() = None;
+                shared.overlay_hidden.store(true, Ordering::SeqCst);
+                last = None; // draw again afterwards
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            shared.overlay_hidden.store(false, Ordering::SeqCst);
             let screen = crate::win::screen_size();
             let scale = w.scale();
             let (els, editing) = {
@@ -901,8 +940,15 @@ pub fn spawn(shared: Arc<Shared>) {
             w.set_interactive(editing);
             let face = cfg.dialogue.overlay_font.clone();
             if last.as_ref().map_or(true, |(e, s, f)| *e != els || *s != screen || *f != face) {
-                let rects = w.render(&els, screen, &face);
+                let (rects, probe) = w.render(&els, screen, &face);
                 *shared.overlay_px.lock().unwrap() = rects;
+                let mut p = shared.overlay_probe.lock().unwrap();
+                // Keep the time if the marker did not move (the check waits for it to be on screen).
+                *p = match (probe, *p) {
+                    (Some((x, y)), Some((ox, oy, t))) if (x, y) == (ox, oy) => Some((x, y, t)),
+                    (Some((x, y)), _) => Some((x, y, Instant::now())),
+                    (None, _) => None,
+                };
                 last = Some((els, screen, face));
             }
             if w.shown && last_raise.elapsed() > Duration::from_millis(500) {

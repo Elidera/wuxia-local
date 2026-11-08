@@ -145,6 +145,10 @@ mod app {
             interface_gen: AtomicU64::new(0),
             reset_watcher: AtomicBool::new(false),
             overlay_px: Mutex::new(Vec::new()),
+            overlay_probe: Mutex::new(None),
+            overlay_in_capture: Mutex::new(None),
+            hide_overlay: AtomicBool::new(false),
+            overlay_hidden: AtomicBool::new(false),
         });
 
         // Hotkeys.

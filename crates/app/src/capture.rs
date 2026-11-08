@@ -3,8 +3,9 @@
 //! Why GDI for the MVP: it is simple, has no D3D setup, and for a subtitle strip
 //! costs ~1–3 ms. Works for games in *borderless windowed* mode (exclusive
 //! fullscreen bypasses the desktop compositor — and also hides any overlay).
-//! Our overlay is a layered window with WDA_EXCLUDEFROMCAPTURE, and BitBlt is
-//! called without CAPTUREBLT, so it never ends up in our own OCR.
+//! Our overlay is a layered window, normally excluded from capture
+//! (WDA_EXCLUDEFROMCAPTURE). Whether that worked is checked on every capture
+//! with a marker pixel; if the overlay is visible, its rectangles are blanked.
 //! A Windows.Graphics.Capture backend can replace this behind the same function.
 
 use wuxia_core::image::Frame;
@@ -50,11 +51,50 @@ pub fn game_area(cfg: &crate::config::Config) -> PxRect {
 /// Capture and blank out everything our overlay is drawing right now (dialogue
 /// plate, screen-translation labels, status badges). On some PCs Windows refuses
 /// to hide the overlay from capture, and then OCR would read our own Russian text.
+///
+/// When the overlay is known to be invisible to capture (Windows hid it, or it
+/// is hidden for this very capture), only the panel is blanked: in «Поверх»
+/// mode the original text under our plate must stay readable.
 pub fn capture_clean(shared: &crate::state::Shared, r: PxRect) -> anyhow::Result<Frame> {
     let mut f = capture(r)?;
-    mask_overlay(shared, &mut f, r);
+    let seen = overlay_seen(shared, &f, r);
+    if seen {
+        mask_overlay(shared, &mut f, r);
+    } else if let Some(p) = crate::win::visible_window_rect(crate::ui::PANEL_TITLE) {
+        apply_masks(&mut f, r, &[p]);
+    }
     Ok(f)
 }
+
+/// Does this capture contain our overlay? Checked with the marker pixel the
+/// overlay draws (`Shared::overlay_probe`); the answer is remembered for
+/// captures that do not cover the marker. Unknown counts as "yes" (blank it).
+fn overlay_seen(shared: &crate::state::Shared, f: &Frame, r: PxRect) -> bool {
+    use std::sync::atomic::Ordering;
+    if shared.overlay_hidden.load(Ordering::SeqCst) {
+        return false;
+    }
+    let probe = *shared.overlay_probe.lock().unwrap();
+    let mut known = shared.overlay_in_capture.lock().unwrap();
+    if let Some((px, py, since)) = probe {
+        // Give the compositor a moment to put a new frame on screen.
+        let (x, y) = (px - r.x, py - r.y);
+        if since.elapsed().as_millis() > 150 && x >= 0 && y >= 0 && x + 1 < f.width as i32 && y + 1 < f.height as i32 {
+            let i = ((y as u32 * f.width + x as u32) * 4) as usize;
+            let seen = f.bgra.get(i..i + 3) == Some(&PROBE_BGR[..]);
+            if *known != Some(seen) {
+                tracing::info!("оверлей {} при захвате экрана", if seen { "виден" } else { "не виден" });
+                *known = Some(seen);
+            }
+        }
+    }
+    known.unwrap_or(true)
+}
+
+/// Colour of the marker pixel, B, G, R (as stored in a frame). Next to black,
+/// invisible on our dark plates, and practically never found in a game picture
+/// as an exact 2×2 block.
+pub const PROBE_BGR: [u8; 3] = [3, 2, 1];
 
 /// Blank the current overlay rectangles in a frame captured at `r`.
 pub fn mask_overlay(shared: &crate::state::Shared, f: &mut Frame, r: PxRect) {
