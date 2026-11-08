@@ -208,12 +208,15 @@ pub struct GameProfile {
     pub window_match: &'static str,
     /// Text languages the game offers that we can translate, the first is the default.
     pub langs: &'static [&'static str],
+    /// Window class of the game, if known (Unreal Engine games: "UnrealWindow").
+    /// Used when the window title does not match (other client or language).
+    pub window_class: &'static str,
 }
 
 pub const PROFILES: &[GameProfile] = &[
-    GameProfile { id: "wuwa", name: "Wuthering Waves", title: "Wuthering Waves", window_match: "Wuthering Waves|鸣潮", langs: &["en", "zh"] },
-    GameProfile { id: "wwm", name: "Where Winds Meet", title: "Where Winds Meet (燕云十六声)", window_match: "Where Winds Meet|燕云十六声", langs: &["zh", "en"] },
-    GameProfile { id: "custom", name: "Другая игра", title: "", window_match: "", langs: &["en", "zh"] },
+    GameProfile { id: "wuwa", name: "Wuthering Waves", title: "Wuthering Waves", window_match: "Wuthering Waves|鸣潮", langs: &["en", "zh"], window_class: "UnrealWindow" },
+    GameProfile { id: "wwm", name: "Where Winds Meet", title: "Where Winds Meet (燕云十六声)", window_match: "Where Winds Meet|燕云十六声", langs: &["zh", "en"], window_class: "" },
+    GameProfile { id: "custom", name: "Другая игра", title: "", window_match: "", langs: &["en", "zh"], window_class: "" },
 ];
 
 pub fn profile(id: &str) -> &'static GameProfile {

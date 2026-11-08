@@ -115,14 +115,27 @@ pub const NOT_GAME_CLASSES: &[&str] = &[
     "ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "TaskManagerWindow", "SDL_app",
 ];
 
-/// Is the foreground window the game? `window_match` holds title parts separated by `|`.
-pub fn game_in_foreground(window_match: &str) -> bool {
+/// Is the foreground window the game? `window_match` holds title parts separated
+/// by `|`; `class_hint` (e.g. "UnrealWindow") also identifies it. Every change of
+/// the foreground window is logged once, so a wrong match is easy to see.
+pub fn game_in_foreground(window_match: &str, class_hint: &str) -> bool {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     let class = foreground_class();
-    if NOT_GAME_CLASSES.iter().any(|c| class.starts_with(c)) {
-        return false;
+    let title_raw = foreground_title();
+    let title = title_raw.to_lowercase();
+    let result = if NOT_GAME_CLASSES.iter().any(|c| class.starts_with(c)) {
+        false
+    } else {
+        (!class_hint.is_empty() && class == class_hint)
+            || window_match.split('|').map(str::trim).filter(|m| !m.is_empty()).any(|m| title.contains(&m.to_lowercase()))
+    };
+    let key = format!("{title_raw}\u{1}{class}");
+    let mut last = LAST.lock().unwrap();
+    if *last != key {
+        tracing::info!("активное окно: «{title_raw}» [{class}] → {}", if result { "игра" } else { "не игра" });
+        *last = key;
     }
-    let title = foreground_title().to_lowercase();
-    window_match.split('|').map(str::trim).filter(|m| !m.is_empty()).any(|m| title.contains(&m.to_lowercase()))
+    result
 }
 
 const INSTANCE_MUTEX: &str = "Local\\WuxiaLocal.SingleInstance";

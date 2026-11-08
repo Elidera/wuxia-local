@@ -55,8 +55,12 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         if !on || selecting {
             continue;
         }
-        if cfg.general.pause_when_unfocused && !cfg.general.window_match.trim().is_empty() {
-            let focused = win::game_in_foreground(&cfg.general.window_match);
+        let pause_on = cfg.general.pause_when_unfocused && !cfg.general.window_match.trim().is_empty();
+        if !pause_on && shared.ui.lock().unwrap().paused_unfocused {
+            shared.ui(|u| u.paused_unfocused = false); // the setting was just turned off
+        }
+        if pause_on {
+            let focused = win::game_in_foreground(&cfg.general.window_match, crate::config::profile(&cfg.general.profile).window_class);
             let was = shared.ui.lock().unwrap().paused_unfocused;
             if focused == was {
                 shared.ui(|u| u.paused_unfocused = !focused);
