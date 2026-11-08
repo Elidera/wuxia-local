@@ -210,7 +210,7 @@ async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, seq: u64, full
 
     let sh = shared.clone();
     let res = tr
-        .translate(&preset, &game, &style, &body, TextKind::Dialogue, Opts::default(), move |partial| {
+        .translate_as(&preset, &game, &style, speaker.as_deref(), &body, TextKind::Dialogue, Opts::default(), move |partial| {
             if sh.dialogue_is_current(seq) {
                 let p = partial.to_string();
                 sh.ui(|u| {

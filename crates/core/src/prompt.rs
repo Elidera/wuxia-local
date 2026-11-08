@@ -8,7 +8,7 @@
 //!   accept a system prompt with detailed literary rules.
 //! * A user-defined template can override both (see [`render_custom`]).
 
-use crate::glossary::Term;
+use crate::glossary::{Gender, Term};
 use crate::lang::{self, Lang};
 use crate::text;
 
@@ -56,6 +56,23 @@ pub struct PromptInput<'a> {
     pub game: &'a str,
     /// Extra user style hint (Russian), e.g. «торжественнее», may be empty.
     pub style_hint: &'a str,
+    /// Who says the line and their gender, when known (dialogue only): Russian
+    /// verbs in the past tense and adjectives about oneself depend on it.
+    pub speaker: Option<(&'a str, Gender)>,
+}
+
+fn gender_zh(g: Gender) -> &'static str {
+    match g {
+        Gender::Female => "女性",
+        Gender::Male => "男性",
+    }
+}
+
+fn gender_en(g: Gender) -> &'static str {
+    match g {
+        Gender::Female => "a woman",
+        Gender::Male => "a man",
+    }
 }
 
 const HYMT_STYLE_DIALOGUE: &str = "武侠小说的文学风格，用词典雅，语言自然流畅";
@@ -101,9 +118,12 @@ fn build_hymt_en(inp: &PromptInput) -> Vec<Message> {
         TextKind::Interface | TextKind::Name => HYMT_EN_STYLE_INTERFACE,
     };
     let mut p = hymt_terms_en(&inp.terms);
-    if inp.kind == TextKind::Dialogue && !inp.context_src.is_empty() {
+    let speaker = inp.speaker.filter(|_| inp.kind == TextKind::Dialogue);
+    if inp.kind == TextKind::Dialogue && (!inp.context_src.is_empty() || speaker.is_some()) {
         p.push_str("[Background Information]\n");
-        p.push_str(&inp.context_src);
+        let who = speaker.map(|(name, g)| format!("The speaker of the line below is {name}, {}.", gender_en(g)));
+        let ctx: Vec<&str> = who.as_deref().into_iter().chain([inp.context_src.as_str()].into_iter().filter(|c| !c.is_empty())).collect();
+        p.push_str(&ctx.join("\n"));
         p.push_str("\n\nPlease translate the following text into Russian, taking the provided background information into account. \
 Do not translate the background information. ");
     } else {
@@ -125,8 +145,11 @@ fn build_hymt(inp: &PromptInput) -> Vec<Message> {
         TextKind::Interface | TextKind::Name => HYMT_STYLE_INTERFACE,
     };
     let mut p = hymt_terms(&inp.terms);
-    if inp.kind == TextKind::Dialogue && !inp.context_src.is_empty() {
-        p.push_str(&inp.context_src);
+    let speaker = inp.speaker.filter(|_| inp.kind == TextKind::Dialogue);
+    if inp.kind == TextKind::Dialogue && (!inp.context_src.is_empty() || speaker.is_some()) {
+        let who = speaker.map(|(name, g)| format!("说话人：{name}（{}）", gender_zh(g)));
+        let ctx: Vec<&str> = who.as_deref().into_iter().chain([inp.context_src.as_str()].into_iter().filter(|c| !c.is_empty())).collect();
+        p.push_str(&ctx.join("\n"));
         p.push_str("\n参考上面的信息，把下面的文本翻译成俄语，译文风格必须严格符合：");
         p.push_str(style);
         p.push_str("。注意不需要翻译上文，也不要额外解释：\n");
@@ -208,6 +231,13 @@ fn build_instruct(inp: &PromptInput) -> Vec<Message> {
         }
         u.push('\n');
     }
+    if let Some((name, g)) = inp.speaker.filter(|_| inp.kind == TextKind::Dialogue) {
+        let (who, form) = match g {
+            Gender::Female => ("женщина", "женском"),
+            Gender::Male => ("мужчина", "мужском"),
+        };
+        u.push_str(&format!("Говорит {name} ({who}): глаголы прошедшего времени и слова о себе — в {form} роде.\n\n"));
+    }
     if inp.kind == TextKind::Dialogue && !inp.context_pairs.is_empty() {
         u.push_str("Предыдущие реплики (не переводи их, это контекст):\n");
         u.push_str(&inp.context_pairs);
@@ -287,7 +317,7 @@ pub fn build_batch(style: PromptStyle, items: &[&str], terms: &[&Term], game: &s
                 context_src: String::new(),
                 context_pairs: String::new(),
                 game,
-                style_hint: "",
+                style_hint: "", speaker: None,
             };
             let mut sys = instruct_system(&dummy);
             sys.push_str(&format!(
@@ -474,6 +504,30 @@ pub fn clean_output(raw: &str, source: &str) -> Result<String, Reject> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn speaker_gender_reaches_every_prompt() {
+        let mk = |src: &'static str| PromptInput {
+            source: src,
+            kind: TextKind::Dialogue,
+            terms: vec![],
+            context_src: String::new(),
+            context_pairs: String::new(),
+            game: "WuWa",
+            style_hint: "",
+            speaker: Some(("Yinlin", Gender::Female)),
+        };
+        let en = build(PromptStyle::HyMt, &mk("I came back for you."));
+        assert!(en[0].content.contains("The speaker of the line below is Yinlin, a woman."), "{}", en[0].content);
+        assert!(en[0].content.ends_with("I came back for you."));
+        let zh = build(PromptStyle::HyMt, &mk("我回来找你了。"));
+        assert!(zh[0].content.starts_with("说话人：Yinlin（女性）\n参考上面的信息"), "{}", zh[0].content);
+        let ins = build(PromptStyle::Instruct, &mk("I came back for you."));
+        assert!(ins[1].content.contains("в женском роде"));
+        let mut ui = mk("Back");
+        ui.kind = TextKind::Interface;
+        assert!(!build(PromptStyle::HyMt, &ui)[0].content.contains("speaker"));
+    }
+
     use super::*;
 
     fn term(s: &str, d: &str) -> Term {
@@ -490,7 +544,7 @@ mod tests {
             context_src: "少侠，你醒了？".into(),
             context_pairs: String::new(),
             game: "Where Winds Meet",
-            style_hint: "",
+            style_hint: "", speaker: None,
         };
         let m = build(PromptStyle::HyMt, &inp);
         assert_eq!(m.len(), 1);
@@ -510,7 +564,7 @@ mod tests {
             context_src: "Where are we?".into(),
             context_pairs: "Where are we? → Где мы?".into(),
             game: "Wuthering Waves",
-            style_hint: "",
+            style_hint: "", speaker: None,
         };
         let m = build(PromptStyle::HyMt, &inp);
         let c = &m[0].content;
@@ -535,7 +589,7 @@ mod tests {
             context_src: String::new(),
             context_pairs: "a → b".into(),
             game: "WWM",
-            style_hint: "",
+            style_hint: "", speaker: None,
         };
         let m = build(PromptStyle::Instruct, &inp);
         assert_eq!(m[0].role, "system");
@@ -552,7 +606,7 @@ mod tests {
             context_src: String::new(),
             context_pairs: String::new(),
             game: "G",
-            style_hint: "",
+            style_hint: "", speaker: None,
         };
         let m = render_custom("Sys {game}\n---\nTranslate: {source}", &inp);
         assert_eq!(m[0].content, "Sys G");

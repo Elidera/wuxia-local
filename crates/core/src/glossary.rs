@@ -13,6 +13,14 @@
 use crate::tsv;
 use std::collections::{HashMap, HashSet};
 
+/// Grammatical gender of a speaker: Russian past tense depends on it
+/// («я пришёл» / «я пришла»). Set in a glossary note as «пол: ж» or «пол: м».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gender {
+    Male,
+    Female,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Term {
     pub src: String,
@@ -128,6 +136,18 @@ impl Glossary {
     /// Exact lookup (used for short UI labels: whole string is a known term).
     pub fn exact(&self, s: &str) -> Option<&Term> {
         self.index.get(&key_of(s.trim())).map(|&i| &self.terms[i])
+    }
+
+    /// Gender of a character from its glossary note («пол: ж» / «пол: м»).
+    pub fn gender_of(&self, name: &str) -> Option<Gender> {
+        let note = self.exact(name)?.note.to_lowercase().replace(' ', "");
+        if note.contains("пол:ж") {
+            Some(Gender::Female)
+        } else if note.contains("пол:м") {
+            Some(Gender::Male)
+        } else {
+            None
+        }
     }
 
     /// Find terms occurring in `text`, longest match first, non-overlapping,
@@ -275,6 +295,16 @@ mod tests {
         let mut lower = Glossary::new();
         lower.load_tsv("jinzhou\tЦзиньчжоу\n");
         assert_eq!(lower.find_in("to jinzhou", 5).len(), 1);
+    }
+
+    #[test]
+    fn gender_from_note() {
+        let mut g = Glossary::new();
+        g.load_tsv("Yinlin\tИньлинь\tпол: ж\nJiyan\tЦзиянь\tгенерал; пол: м\nRover\tСкиталец\n");
+        assert_eq!(g.gender_of("Yinlin"), Some(Gender::Female));
+        assert_eq!(g.gender_of("jiyan"), Some(Gender::Male));
+        assert_eq!(g.gender_of("Rover"), None);
+        assert_eq!(g.gender_of("Langsheng"), None);
     }
 
     #[test]

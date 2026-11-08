@@ -743,7 +743,9 @@ impl Window {
 
     /// Lay out, draw and show `els`. Returns the screen rectangles drawn.
     fn render(&mut self, els: &[El], screen: (i32, i32)) -> Vec<[i32; 4]> {
-        let scale = self.scale();
+        // Text grows with the screen: font 26 is meant for 1080p, on 1440p and 4K
+        // it would be tiny when Windows scaling is left at 100 %.
+        let scale = self.scale().max(screen.1 as f32 / 1080.0);
         let sf = (screen.0 as f32, screen.1 as f32);
         let ops: Vec<Op> = els.iter().filter_map(|e| layout(e, &mut self.gdi, scale, sf)).collect();
         let rects: Vec<[i32; 4]> = ops.iter().map(|o| o.rect).collect();

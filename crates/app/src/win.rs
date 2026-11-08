@@ -20,6 +20,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 
+/// Local date and time: ("2026-11-08", "13:45:02").
+pub fn local_date_time() -> (String, String) {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    (format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay), format!("{:02}:{:02}:{:02}", t.wHour, t.wMinute, t.wSecond))
+}
+
 /// Client area (the picture, without frame and title) of the foreground window
 /// in screen pixels, clipped to the primary screen.
 pub fn foreground_client_rect() -> Option<(i32, i32, i32, i32)> {

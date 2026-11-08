@@ -149,11 +149,31 @@ pub fn normalize_line_en(raw: &str) -> String {
             s = s.replace(p, &p[1..]);
         }
     }
+    let s = fix_digits_in_words(&s);
     let junk = |c: char| matches!(c, '|' | '_' | '~' | '=' | '+' | '*' | '^' | '¦' | '丨' | '•' | '·') || c.is_whitespace();
     let s = s.trim_matches(junk);
     // A lone dash/bullet at the start is a box border or list marker.
     let s = s.trim_start_matches(|c: char| c == '-' || c == '—').trim_start();
     s.to_string()
+}
+
+/// Typical OCR digit-for-letter mix-ups inside English words: "J0b" → "Job",
+/// "a1l" → "all", "|" between letters → "l". Numbers ("SOL3", "300", "2nd")
+/// are left alone: only a digit with letters on both sides is changed.
+fn fix_digits_in_words(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let letter = |i: usize| c.get(i).map_or(false, |ch| ch.is_alphabetic());
+    let mut out = String::with_capacity(s.len());
+    for i in 0..c.len() {
+        let between = i > 0 && letter(i - 1) && letter(i + 1);
+        let ch = match c[i] {
+            '0' if between => 'o',
+            '1' | '|' if between => 'l',
+            ch => ch,
+        };
+        out.push(ch);
+    }
+    out
 }
 
 /// Normalize for the given source language.
@@ -349,6 +369,13 @@ pub fn tidy_russian(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ocr_digits_inside_words() {
+        assert_eq!(normalize_line_en("applying forthisJ0b feels a1l right"), "applying forthisJob feels all right");
+        assert_eq!(normalize_line_en("SOL3 phase, 300 credits, the 2nd floor, Q4_K_M"), "SOL3 phase, 300 credits, the 2nd floor, Q4_K_M");
+        assert_eq!(normalize_line_en("He|lo"), "Hello");
+    }
+
     #[test]
     fn russian_plural() {
         let f = |n| count_ru(n, "надпись", "надписи", "надписей");

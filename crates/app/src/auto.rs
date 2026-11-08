@@ -233,7 +233,7 @@ async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, id: u64, full:
     };
     let sh = shared.clone();
     let res = tr
-        .translate(&preset, &game, &cfg.dialogue.style_hint, &body, TextKind::Dialogue, Opts::default(), move |partial| {
+        .translate_as(&preset, &game, &cfg.dialogue.style_hint, speaker.as_deref(), &body, TextKind::Dialogue, Opts::default(), move |partial| {
             let p = partial.to_string();
             sh.ui(|u| {
                 if let Some(l) = u.auto_lines.iter_mut().find(|l| l.id == id) {

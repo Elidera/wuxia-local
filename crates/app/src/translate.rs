@@ -27,6 +27,9 @@ pub struct Translator {
     fuzzy: Mutex<FuzzyMemory>,
     /// All OCR spellings of a speaker name → one.
     names: Mutex<NameBook>,
+    /// When the last dialogue line was translated: after a long silence the
+    /// scene has changed and old lines are no longer useful context.
+    last_dialogue: Mutex<Option<Instant>>,
     /// llama-server runs with one slot: serialize requests, dialogue first.
     gate: tokio::sync::Mutex<()>,
 }
@@ -127,7 +130,8 @@ impl Translator {
                 paths.user_glossary(),
                 "# Ваш глоссарий: оригинал<TAB>русский<TAB>заметка. Перекрывает встроенный.\n\
                  # Оригинал может быть китайским или английским (английский — без учёта регистра).\n\
-                 # Примеры:\n# 沈七\tШэнь Ци\tимя\n# Rover\tСкиталец\tгерой\n",
+                 # «пол: ж» или «пол: м» в заметке к имени — модель узнает пол говорящего.\n\
+                 # Примеры:\n# 沈七\tШэнь Ци\tимя; пол: м\n# Rover\tСкиталец\tгерой\n# Langsheng\tЛаншэн\tпол: м\n",
             );
         }
         if !paths.fixes().exists() {
@@ -156,6 +160,7 @@ impl Translator {
             history: Mutex::new(History::new(context_lines)),
             fuzzy: Mutex::new(FuzzyMemory::new(400, 0.9)),
             names: Mutex::new(NameBook::new()),
+            last_dialogue: Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
         }
     }
@@ -177,6 +182,23 @@ impl Translator {
     /// Fix typical OCR errors before translation (fixes.tsv, stage `ocr`).
     pub fn fix_ocr(&self, s: &str) -> String {
         self.fixes.lock().unwrap().apply_ocr(s)
+    }
+
+    /// The session log: every translated dialogue line as text, one file per
+    /// day (`logs\\dialogues-ГГГГ-ММ-ДД.txt`) — to reread the story or find bad
+    /// translations. Lines taken from memory are not repeated.
+    fn log_session(&self, speaker: Option<&str>, src: &str, dst: &str) {
+        let (date, time) = crate::win::local_date_time();
+        let path = self.paths.data.join("logs").join(format!("dialogues-{date}.txt"));
+        let who = speaker.map(|s| format!("{s}: ")).unwrap_or_default();
+        let entry = format!("[{time}] {who}{src}\n          → {dst}\n\n");
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(entry.as_bytes());
+        }
     }
 
     /// The user's `skip` rules (fixes.tsv): never translate such text.
@@ -237,12 +259,39 @@ impl Translator {
         src: &str,
         kind: TextKind,
         opts: Opts,
+        on_partial: impl FnMut(&str),
+    ) -> Result<Output> {
+        self.translate_as(preset, game, style_hint, None, src, kind, opts, on_partial).await
+    }
+
+    /// Like [`translate`](Self::translate) for a dialogue line said by `speaker`
+    /// (source spelling): the speaker's gender from the glossary («пол: ж/м»)
+    /// goes to the model, and the line is written to the session log.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn translate_as(
+        &self,
+        preset: &ModelPreset,
+        game: &str,
+        style_hint: &str,
+        speaker: Option<&str>,
+        src: &str,
+        kind: TextKind,
+        opts: Opts,
         mut on_partial: impl FnMut(&str),
     ) -> Result<Output> {
         let t0 = Instant::now();
         let src = src.trim();
         if src.is_empty() {
             return Err(anyhow!("пустой текст"));
+        }
+        if kind == TextKind::Dialogue && opts.use_history {
+            // Two minutes without subtitles: a new scene, the old lines would mislead.
+            let mut last = self.last_dialogue.lock().unwrap();
+            if last.map_or(false, |t| t.elapsed() > std::time::Duration::from_secs(120)) {
+                self.history.lock().unwrap().clear();
+                tracing::debug!(target: "translate", "долгая пауза — контекст сброшен (новая сцена)");
+            }
+            *last = Some(Instant::now());
         }
         if opts.use_cache {
             if let Some(hit) = self.lookup(&preset.id, src, kind) {
@@ -280,6 +329,7 @@ impl Translator {
                 context_pairs: ctx_pairs,
                 game,
                 style_hint,
+                speaker: speaker.filter(|_| kind == TextKind::Dialogue).and_then(|s| g.gender_of(s).map(|gen| (s, gen))),
             };
             if preset.template.trim().is_empty() {
                 prompt::build(PromptStyle::parse(&preset.prompt), &inp)
@@ -289,35 +339,55 @@ impl Translator {
         };
 
         let _slot = self.gate.lock().await;
-        let raw = self
-            .client
-            .chat(&messages, preset, |acc| {
-                if let Ok(p) = prompt::clean_output(acc, src) {
-                    on_partial(&p);
+        // The model samples (temperature 0.7, as Hy-MT recommends). A dialogue
+        // translation that dropped a glossary term gets one more, calmer try
+        // (temperature 0.2); a translation that still ignores the glossary is
+        // not cached, so the next time the line gets another chance.
+        let mut attempt_preset = preset.clone();
+        let mut best: Option<(String, usize)> = None;
+        for attempt in 0..2 {
+            let raw = self
+                .client
+                .chat(&messages, &attempt_preset, |acc| {
+                    if let Ok(p) = prompt::clean_output(acc, src) {
+                        on_partial(&p);
+                    }
+                })
+                .await?;
+            let text = match prompt::clean_output(&raw, src) {
+                Ok(t) => t,
+                Err(e) if best.is_some() => {
+                    tracing::debug!(target: "translate", "повтор не удался: {e:?}");
+                    break;
                 }
-            })
-            .await?;
+                Err(Reject::NotTranslated) => return Err(anyhow!("модель вернула непереведённый текст")),
+                Err(Reject::TooLong) => return Err(anyhow!("модель выдала слишком длинный ответ")),
+                Err(Reject::Empty) => return Err(anyhow!("пустой ответ модели")),
+            };
+            let missed: Vec<String> = {
+                let g = self.glossary.lock().unwrap();
+                g.violations(src, &text).iter().map(|t| t.src.clone()).collect()
+            };
+            if !missed.is_empty() {
+                tracing::info!(target: "translate", "глоссарий не соблюдён ({missed:?}), попытка {}", attempt + 1);
+            }
+            let better = best.as_ref().map_or(true, |(_, n)| missed.len() < *n);
+            if better {
+                best = Some((text, missed.len()));
+            }
+            if missed.is_empty() || kind != TextKind::Dialogue || preset.temperature <= 0.25 {
+                break;
+            }
+            attempt_preset.temperature = 0.2;
+        }
         drop(_slot);
-
-        let text = match prompt::clean_output(&raw, src) {
-            Ok(t) => t,
-            Err(Reject::NotTranslated) => return Err(anyhow!("модель вернула непереведённый текст")),
-            Err(Reject::TooLong) => return Err(anyhow!("модель выдала слишком длинный ответ")),
-            Err(Reject::Empty) => return Err(anyhow!("пустой ответ модели")),
-        };
+        let (text, missed) = best.ok_or_else(|| anyhow!("пустой ответ модели"))?;
+        if let Ok(p) = prompt::clean_output(&text, src) {
+            on_partial(&p);
+        }
         let ms = t0.elapsed().as_millis();
         tracing::info!(target: "translate", "[{}|{}|{ms} мс] {src} → {text}", preset.id, kind_tag(kind));
-        // The model samples (temperature 0.7, as Hy-MT recommends) and the cache
-        // keeps a translation forever: one that ignored the glossary is not cached,
-        // so the next time the line gets another chance.
-        let follows_glossary = {
-            let g = self.glossary.lock().unwrap();
-            let v = g.violations(src, &text);
-            if !v.is_empty() {
-                tracing::info!(target: "translate", "глоссарий не соблюдён ({:?}) — в кэш не кладу", v.iter().map(|t| &t.src).collect::<Vec<_>>());
-            }
-            v.is_empty()
-        };
+        let follows_glossary = missed == 0;
         if opts.use_cache && follows_glossary {
             let line = self.cache.lock().unwrap().insert(&[&preset.id, kind_tag(kind), src], &text);
             append(&self.paths.cache(), &line);
@@ -330,6 +400,7 @@ impl Translator {
             if opts.use_history {
                 self.history.lock().unwrap().push(src, &text);
             }
+            self.log_session(speaker, src, &text);
         }
         Ok(Output { text, cached: false, ms })
     }

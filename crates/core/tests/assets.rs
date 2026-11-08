@@ -24,7 +24,7 @@ fn bench_lines_get_terms_and_prompts() {
     assert!(with_terms >= 10, "lines with glossary hits: {with_terms}");
     for l in &lines {
         assert_eq!(&wuxia_core::text::normalize_line(l), l, "bench line not normalized: {l}");
-        let inp = PromptInput { source: l, kind: TextKind::Dialogue, terms: g.find_in(l, 24), context_src: String::new(), context_pairs: String::new(), game: "WWM", style_hint: "" };
+        let inp = PromptInput { source: l, kind: TextKind::Dialogue, terms: g.find_in(l, 24), context_src: String::new(), context_pairs: String::new(), game: "WWM", style_hint: "" , speaker: None};
         for s in [PromptStyle::HyMt, PromptStyle::Instruct] {
             assert!(build(s, &inp).last().unwrap().content.ends_with(l));
         }

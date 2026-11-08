@@ -182,7 +182,7 @@ fn run_batch(a: &Args, lines: &[&str], g: &Glossary, agent: &ureq::Agent) {
                 context_src: String::new(),
                 context_pairs: String::new(),
                 game: &a.game,
-                style_hint: "",
+                style_hint: "", speaker: None,
             };
             let t = chat(agent, a, &prompt::build(style, &inp))
                 .ok()
@@ -229,7 +229,7 @@ fn main() {
             context_src: hist.source_context(),
             context_pairs: hist.paired_context(),
             game: &a.game,
-            style_hint: "",
+            style_hint: "", speaker: None,
         };
         let msgs = prompt::build(style, &inp);
         let t0 = Instant::now();
