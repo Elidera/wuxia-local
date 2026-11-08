@@ -201,7 +201,9 @@ pub fn join_lines_for<S: AsRef<str>>(lines: &[S], lang: Lang) -> String {
 /// dialogue line ("Jiyan", "Black Shores Researcher")? Title-case words, no
 /// sentence punctuation, at most 4 words.
 pub fn looks_like_name_en(s: &str) -> bool {
-    let s = s.trim();
+    // OCR sometimes reads one letter of a name as "?": "Langsh?ng".
+    let cleaned = drop_inner_question_marks(s.trim());
+    let s = cleaned.as_str();
     let words: Vec<&str> = s.split_whitespace().collect();
     if words.is_empty() || words.len() > 4 || s.chars().count() > 32 {
         return false;
@@ -213,6 +215,15 @@ pub fn looks_like_name_en(s: &str) -> bool {
     words.iter().all(|w| {
         w.chars().next().map_or(false, |c| c.is_uppercase()) || small.contains(&w.to_lowercase().as_str())
     }) && words[0].chars().next().map_or(false, |c| c.is_uppercase())
+}
+
+/// "Langsh?ng" → "Langshng": a "?" between two letters is an unread letter.
+fn drop_inner_question_marks(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    (0..c.len())
+        .filter(|&i| !(c[i] == '?' && i > 0 && i + 1 < c.len() && c[i - 1].is_alphabetic() && c[i + 1].is_alphabetic()))
+        .map(|i| c[i])
+        .collect()
 }
 
 /// A speaker name line above English dialogue. Like [`looks_like_name_en`], but
@@ -330,6 +341,8 @@ mod tests {
     #[test]
     fn speaker_split_by_ocr() {
         assert!(looks_like_speaker_en("Lang heng"));
+        assert!(looks_like_speaker_en("Langsh?ng"));
+        assert!(!looks_like_speaker_en("Really?"));
         assert!(looks_like_speaker_en("Black Shores Researcher"));
         assert!(!looks_like_speaker_en("Thank you for coming"));
         assert!(!looks_like_speaker_en("Wait, what"));

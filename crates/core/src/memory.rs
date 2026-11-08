@@ -95,8 +95,13 @@ impl NameBook {
         if k.chars().count() < 3 {
             return raw.to_string();
         }
-        if let Some((_, c)) = self.names.iter().find(|(f, _)| *f == k || similarity::ratio(f, &k) >= 0.8) {
-            return c.clone();
+        if let Some(i) = self.names.iter().position(|(f, _)| *f == k || similarity::ratio(f, &k) >= 0.8) {
+            // A clean spelling replaces one with an unread letter ("Langsh?ng").
+            let messy = |n: &str| n.chars().any(|c| c == '?' || c.is_ascii_digit());
+            if messy(&self.names[i].1) && !messy(raw) {
+                self.names[i] = (k, raw.to_string());
+            }
+            return self.names[i].1.clone();
         }
         // Prefer a clean spelling: a variant with odd letters gets replaced later
         // only if it was never used; keep it simple — first seen wins.
@@ -135,6 +140,10 @@ mod tests {
         assert_eq!(b.canonical("Lan sheng"), "Langsheng");
         assert_eq!(b.canonical("Längsheng"), "Langsheng");
         assert_eq!(b.canonical("Jiyan"), "Jiyan");
+        let mut c = NameBook::new();
+        assert_eq!(c.canonical("Langsh?ng"), "Langsh?ng");
+        assert_eq!(c.canonical("Langsheng"), "Langsheng");
+        assert_eq!(c.canonical("Langsh?ng"), "Langsheng");
         assert_eq!(b.canonical("Jinhsi"), "Jinhsi");
     }
 }

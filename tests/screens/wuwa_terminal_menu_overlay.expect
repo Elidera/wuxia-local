@@ -3,4 +3,5 @@
 lang	en
 label	Edit Bio
 label	Baishi_Shu
-max_speech	1
+max_speech	0
+absent	nv10Hep

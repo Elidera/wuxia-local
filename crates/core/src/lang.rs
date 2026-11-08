@@ -89,29 +89,59 @@ pub fn sentence_like_en(s: &str) -> bool {
     }
 }
 
-/// Russian text read by the English OCR turns into Latin look-alikes with
-/// capitals inside words: «Поиск» → "noøcK", «Справка» → "CnpaBKa",
-/// «Нейросеть» → "HeipoceTb". Real English almost never has a capital after a
-/// lower-case letter inside a word (rare "iPhone", "McDonald").
-fn has_inner_capital(w: &str) -> bool {
+/// Russian text read by the English OCR turns into Latin look-alikes:
+/// «Поиск» → "noøcK", «Справка» → "CnpaBKa", «Это того стоило» → "3TO Toro
+/// CTOVIJIO", «Пионер» → "nv10Hep", «Магазин» → "CTopa"-like words. Real English
+/// almost never has these shapes (rare "iPhone", "McDonald").
+fn suspicious_word(w: &str) -> bool {
+    let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+    let chars: Vec<char> = w.chars().collect();
+    let letters = chars.iter().filter(|c| c.is_alphabetic()).count();
+    if letters < 2 {
+        return false;
+    }
+    // A capital after a lower-case letter: "noøcK", "naHopaua".
     let mut seen_lower = false;
-    for c in w.chars() {
+    for &c in &chars {
         if c.is_lowercase() {
             seen_lower = true;
         } else if c.is_uppercase() && seen_lower {
             return true;
         }
     }
-    false
+    // Digits inside or before letters: "nv10Hep", "3TO", "56nxcoa" — but not
+    // "SOL3", "Lv70", "2nd", "10am".
+    if let Some(first_digit) = chars.iter().position(|c| c.is_ascii_digit()) {
+        let letters_after = chars[first_digit..].iter().filter(|c| c.is_alphabetic()).count();
+        let tail: String = chars[first_digit..].iter().filter(|c| c.is_alphabetic()).collect::<String>().to_lowercase();
+        let ordinal = ["st", "nd", "rd", "th", "am", "pm", "s", "x", "d", "k", "m"].contains(&tail.as_str());
+        if letters_after >= 2 && !ordinal {
+            return true;
+        }
+    }
+    // Two or more capitals then lower-case: "CTopa", "LIHocan" (not "NPCs").
+    let caps = chars.iter().take_while(|c| c.is_uppercase()).count();
+    if caps >= 2 && chars.len() >= 4 && chars.len() > caps {
+        let rest: String = chars[caps..].iter().collect();
+        if rest != "s" && rest.chars().all(|c| c.is_lowercase()) {
+            return true;
+        }
+    }
+    // Capital look-alikes of Cyrillic letters: "CTOVIJIO", "MOTOUVIKJI".
+    w.contains("IJ") || w.contains("JI")
 }
 
-/// Share of 3+-letter words that look like misread Cyrillic (see `has_inner_capital`).
+/// Share of words that look like misread Cyrillic (see `suspicious_word`).
 pub fn misread_share(s: &str) -> f32 {
-    let words: Vec<&str> = s.split(|c: char| !is_latin_letter(c)).filter(|w| w.chars().count() >= 3).collect();
+    // Hyphenated and underscored words are separate words: "Sub-Stats", "Baishi_Shu".
+    let words: Vec<&str> = s
+        .split(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '/' | '—'))
+        .filter(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 2)
+        .collect();
     if words.is_empty() {
         return 0.0;
     }
-    words.iter().filter(|w| has_inner_capital(w)).count() as f32 / words.len() as f32
+    words.iter().filter(|w| suspicious_word(w)).count() as f32 / words.len() as f32
 }
 
 fn looks_misread(s: &str) -> bool {
@@ -177,14 +207,29 @@ mod tests {
 
     #[test]
     fn misread_russian_is_not_english() {
-        for s in ["p noøcK", "CnpaBKa", "HeipoceTb Songtell...", "rnaBHas", "LIJMH0 naHopaua -.", "Hy-MT2 1.8B Q4_K_M — 6blCTpblä YMonqaHmo)"] {
+        for s in [
+            "p noøcK",
+            "CnpaBKa",
+            "HeipoceTb Songtell...",
+            "rnaBHas",
+            "LIJMH0 naHopaua -.",
+            "Hy-MT2 1.8B Q4_K_M — 6blCTpblä YMonqaHmo)",
+            ", — 3TO Toro CTOVIJIO.",
+            "nv10Hep",
+            "CTopa",
+            "MOTOUVIKJI",
+            "06Haw6 LW6TMTn6",
+        ] {
             assert!(!is_subtitle(s, Lang::En), "{s}");
             assert!(!is_label(s, Lang::En), "{s}");
         }
         assert!(is_subtitle("There's nothing quite like being on duty in a bustling commercial area.", Lang::En));
         assert!(is_subtitle("I bought a new iPhone, and it was worth every coin I had saved.", Lang::En));
         assert!(is_label("Data Bank", Lang::En));
+        assert!(is_label("Sub-Stats", Lang::En));
         assert!(is_label("SOL3 Phase", Lang::En));
+        assert!(is_label("Lv70 NPCs Rewards", Lang::En));
+        assert!(is_subtitle("Meet me on the 2nd floor at 10am, and bring the TV.", Lang::En));
     }
 
     #[test]

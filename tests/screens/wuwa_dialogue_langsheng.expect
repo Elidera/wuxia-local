@@ -4,7 +4,8 @@ lang	en
 speaker	Langsheng
 speech	nothing quite like being on duty in a bustling commercial area
 speech	All that time I spent applying for this job feels worth it
-speech	You volunteered to come here
+# «here?» в светящейся кнопке Windows OCR не читает — кандидат для PaddleOCR.
+speech	You volunteered to come
 absent	User ID
 absent	Ничего не сравнится
 max_speech	3
