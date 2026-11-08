@@ -29,6 +29,8 @@ mod llm;
 #[cfg(windows)]
 mod mascot;
 #[cfg(windows)]
+mod hw;
+#[cfg(windows)]
 mod ocr;
 #[cfg(windows)]
 mod paddle;
@@ -133,12 +135,31 @@ mod app {
             tracing::error!("panic: {info}");
         }));
 
-        let cfg = Config::load(&paths)?;
+        let mut cfg = Config::load(&paths)?;
+        let hw = hw::detect();
+        let (rec, rec_gpu) = hw::recommend(&cfg, &hw);
+        tracing::info!("компьютер: {} → подходит модель {rec} ({})", hw.describe(), if rec_gpu { "на видеокарте" } else { "на процессоре" });
+        let mut first_notice = None;
+        if cfg.fresh {
+            // First start: the model that suits this PC, not a guess.
+            cfg.llm.active_model = rec.clone();
+            cfg.llm.gpu_layers = if rec_gpu { 99 } else { 0 };
+            if let Err(e) = cfg.save(&paths) {
+                tracing::warn!("настройки не сохранены: {e}");
+            }
+            let name = cfg.active_model().name.clone();
+            first_notice = Some(format!(
+                "Для вашего компьютера ({}) выбрана модель {} — {}. Сменить можно в карточке «Нейросеть-переводчик».",
+                hw.describe(),
+                hw::short_name(&name),
+                if rec_gpu { "на видеокарте" } else { "на процессоре" }
+            ));
+        }
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         let shared = Arc::new(Shared {
             paths: paths.clone(),
             cfg: RwLock::new(cfg.clone()),
-            ui: Mutex::new(UiState { dialogue_on: cfg.dialogue.enabled, show_original: cfg.dialogue.show_original, ..Default::default() }),
+            ui: Mutex::new(UiState { dialogue_on: cfg.dialogue.enabled, show_original: cfg.dialogue.show_original, hw: hw.clone(), ..Default::default() }),
             cmd: cmd_tx.clone(),
             egui: OnceLock::new(),
             dialogue_seq: AtomicU64::new(0),
@@ -148,6 +169,10 @@ mod app {
             overlay_probe: Mutex::new(None),
             overlay_in_capture: Mutex::new(None),
         });
+
+        if let Some(msg) = first_notice {
+            shared.ui(|u| u.notice(msg));
+        }
 
         // Hotkeys.
         let problems = hotkeys::spawn(&cfg.hotkeys, cmd_tx.clone());

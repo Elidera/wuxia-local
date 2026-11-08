@@ -219,6 +219,8 @@ pub struct UiState {
     pub server: Option<ServerStatus>,
     pub bench_progress: Option<String>,
     pub ocr_debug: Option<OcrDebug>,
+    /// This PC's video card and memory (for the model advice).
+    pub hw: crate::hw::Hardware,
     /// OCR availability (None = not checked yet).
     pub ocr_status: Option<Result<(), String>>,
     /// Name of the OCR engine in use ("PaddleOCR", "Windows OCR", …).

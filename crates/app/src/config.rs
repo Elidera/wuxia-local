@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// The config file was just created (first start): pick a model for this PC.
+    #[serde(skip)]
+    pub fresh: bool,
     pub general: General,
     pub llm: Llm,
     pub models: Vec<ModelPreset>,
@@ -374,7 +377,8 @@ impl Config {
     /// Load the user config; on first run copy the bundled default, falling back to built-ins.
     pub fn load(paths: &Paths) -> anyhow::Result<Config> {
         let p = paths.config();
-        if !p.exists() {
+        let fresh = !p.exists();
+        if fresh {
             if paths.default_config().exists() {
                 std::fs::copy(paths.default_config(), &p)?;
             } else {
@@ -386,6 +390,7 @@ impl Config {
         if cfg.models.is_empty() {
             cfg.models = default_models();
         }
+        cfg.fresh = fresh;
         cfg.apply_profile();
         // Region mode cannot work with a near-full-screen region (the 3D scene never
         // settles); such configs come from before the auto mode existed.

@@ -10,6 +10,7 @@ pub mod detect;
 pub mod fixes;
 pub mod glossary;
 pub mod history;
+pub mod hwfit;
 pub mod image;
 pub mod lang;
 pub mod layout;

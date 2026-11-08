@@ -531,10 +531,17 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
     card(ui, "Нейросеть-переводчик", |ui| {
         let mut active = cfg.llm.active_model.clone();
         let current = cfg.active_model();
+        let hw = shared.ui.lock().unwrap().hw.clone();
+        let (rec, rec_gpu) = crate::hw::recommend(&cfg, &hw);
         egui::ComboBox::from_label("").selected_text(&current.name).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
             for m in &cfg.models {
                 let downloaded = !m.path.is_empty() && std::path::Path::new(&m.path).exists();
-                let label = if downloaded { m.name.clone() } else { format!("{}  · скачается {:.1} ГБ", m.name, m.size_gb) };
+                let mut label = if downloaded { m.name.clone() } else { format!("{}  · скачается {:.1} ГБ", m.name, m.size_gb) };
+                if m.id == rec {
+                    label.push_str("  · подходит вашему ПК");
+                } else if matches!(crate::hw::fit(&cfg, m, &hw), wuxia_core::hwfit::Fit::Tight | wuxia_core::hwfit::Fit::TooBig) {
+                    label.push_str("  · может не поместиться");
+                }
                 ui.selectable_value(&mut active, m.id.clone(), label);
             }
         });
@@ -550,6 +557,14 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
                 _ => "",
             },
         );
+        // What this PC can run.
+        if hw.ram_gb > 0.0 {
+            let rec_name = cfg.models.iter().find(|m| m.id == rec).map(|m| crate::hw::short_name(&m.name)).unwrap_or_default();
+            hint(ui, &format!("Ваш ПК: {}. Подходит: {rec_name} {}.", hw.describe(), if rec_gpu { "на видеокарте" } else { "на процессоре" }));
+            if let Some(w) = crate::hw::warning(&cfg, current, &hw) {
+                ui.label(RichText::new(w).small().color(YELLOW));
+            }
+        }
         ui.horizontal(|ui| {
             if let Some(s) = &server {
                 ui.label(RichText::new(s.label()).small().color(WEAK));
