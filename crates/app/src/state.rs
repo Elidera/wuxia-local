@@ -290,11 +290,6 @@ pub struct Shared {
     pub overlay_probe: Mutex<Option<(i32, i32, std::time::Instant)>>,
     /// Last probe result: does our capture see the overlay? (None = unknown.)
     pub overlay_in_capture: Mutex<Option<bool>>,
-    /// «Поверх»: hide the overlay for a moment to look at the original text
-    /// (only when Windows will not hide it from capture). Set by the reader,
-    /// `overlay_hidden` is the overlay thread's answer.
-    pub hide_overlay: AtomicBool,
-    pub overlay_hidden: AtomicBool,
 }
 
 impl Shared {

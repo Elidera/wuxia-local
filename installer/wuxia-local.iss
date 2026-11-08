@@ -3,7 +3,7 @@
 ; Installs per-user (no admin rights) into %LOCALAPPDATA%\Programs\WuxiaLocal.
 
 #ifndef AppVersion
-  #define AppVersion "0.3.2"
+  #define AppVersion "0.3.3"
 #endif
 #ifndef Dist
   #define Dist "..\dist"

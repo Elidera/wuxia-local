@@ -33,8 +33,6 @@ pub struct AutoState {
     /// Where real dialogue lines appeared (for finding the subtitle area).
     zone_samples: Vec<Rect>,
     zone_announced: bool,
-    /// Scans skipped while «Поверх» looks under the plates only now and then.
-    skipped: u32,
 }
 
 /// Lines on screen at once; more is clutter (and model time).
@@ -83,21 +81,7 @@ impl AutoState {
         let lang = cfg.source_lang();
         // Only the game's own picture: no taskbar, desktop or other windows.
         let area: PxRect = capture::game_area(&cfg);
-        // «Поверх» on a PC where Windows does not hide the overlay from capture:
-        // our plates cover the original, so now and then (every third scan) the
-        // overlay is hidden for a moment to read what is under it.
-        let peek = cfg.dialogue.position == "over" && *shared.overlay_in_capture.lock().unwrap() == Some(true) && !self.active.is_empty();
-        if peek {
-            self.skipped += 1;
-            if self.skipped % 3 != 0 {
-                return;
-            }
-            hide_overlay_briefly(shared).await;
-        }
         let frame = capture::capture_clean(shared, area);
-        if peek {
-            shared.hide_overlay.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
         let frame = match frame {
             Ok(f) => f,
             Err(e) => {
@@ -145,13 +129,12 @@ impl AutoState {
                 moved.push((a.id, *r));
                 continue;
             }
-            // Looking under the plates happens only every ~1.5 s: no need to wait for a second read.
-            if peek || self.prev.iter().any(|p| similarity::ratio(p, t) > 0.95) {
+            if self.prev.iter().any(|p| similarity::ratio(p, t) > 0.95) {
                 new.push((t.clone(), *r));
             }
         }
         self.prev = found.into_iter().map(|(t, _)| t).collect();
-        self.active.retain(|a| a.missed < if peek { 1 } else { 2 });
+        self.active.retain(|a| a.missed < 2);
         let room = MAX_LINES.saturating_sub(self.active.len());
         let mut started: Vec<AutoLine> = Vec::new();
         let mut learned = false;
@@ -185,20 +168,6 @@ impl AutoState {
             u.auto_lines.extend(started);
         });
     }
-}
-
-/// Ask the overlay thread to hide and wait until the screen no longer shows it.
-pub async fn hide_overlay_briefly(shared: &Shared) {
-    use std::sync::atomic::Ordering;
-    shared.hide_overlay.store(true, Ordering::SeqCst);
-    for _ in 0..30 {
-        if shared.overlay_hidden.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    // One or two compositor frames until the hidden window is off the screen.
-    tokio::time::sleep(std::time::Duration::from_millis(35)).await;
 }
 
 /// Speech-like text blocks on a whole-screen OCR result, as they will be

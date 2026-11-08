@@ -147,8 +147,6 @@ mod app {
             overlay_px: Mutex::new(Vec::new()),
             overlay_probe: Mutex::new(None),
             overlay_in_capture: Mutex::new(None),
-            hide_overlay: AtomicBool::new(false),
-            overlay_hidden: AtomicBool::new(false),
         });
 
         // Hotkeys.

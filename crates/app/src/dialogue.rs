@@ -33,7 +33,6 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let mut last_auto = Instant::now();
     let mut last_excl_check = Instant::now();
     let mut excl_warned = false;
-    let mut last_peek = Instant::now();
 
     loop {
         tokio::time::sleep(Duration::from_millis(cfg.dialogue.interval_ms.clamp(50, 2000))).await;
@@ -99,23 +98,7 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         }
 
         let rect = PxRect::from_fraction(cfg.dialogue.region, win::screen_size());
-        // «Поверх» where Windows does not hide the overlay from capture: our
-        // plate covers the line, so about once a second the overlay is hidden
-        // for a moment and only those frames are read.
-        let peek = cfg.dialogue.position == "over"
-            && *shared.overlay_in_capture.lock().unwrap() == Some(true)
-            && shared.ui.lock().unwrap().dialogue.is_some();
-        if peek {
-            if last_peek.elapsed() < Duration::from_millis(1000) {
-                continue;
-            }
-            last_peek = Instant::now();
-            crate::auto::hide_overlay_briefly(&shared).await;
-        }
         let captured = capture::capture_clean(&shared, rect);
-        if peek {
-            shared.hide_overlay.store(false, Ordering::SeqCst);
-        }
         let frame = match captured {
             Ok(f) => {
                 fail_count = 0;

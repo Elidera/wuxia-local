@@ -1,10 +1,12 @@
 //! The overlay: translations drawn over the game.
 //!
 //! A plain Win32 *layered* window (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST)
-//! updated with `UpdateLayeredWindow` from a premultiplied bitmap — the classic
-//! way subtitle tools put text over borderless games. Earlier versions drew
-//! with OpenGL into a full-screen transparent egui window; on the user's PC that
-//! window never showed up over the game (and could not be hidden from capture).
+//! with a colour key: pixels of `raster::KEY_BGR` are transparent, the rest is
+//! opaque. On Windows 10 only such a window (not an `UpdateLayeredWindow`
+//! one) can be hidden from screen capture — then our own capture sees the
+//! game under it, and translucent plates are composed by us over that live
+//! picture (~10 times a second). «Поверх» erases the original text in that
+//! picture and writes the translation in its place.
 //!
 //! * Text is rendered by GDI (Segoe UI, anti-aliased) into a black/white mask
 //!   and composed with plates in `wuxia_core::raster`.
@@ -12,7 +14,6 @@
 //!   there is nothing to show, so it never covers the whole game.
 //! * Every 500 ms it re-asserts "topmost": some games raise themselves above
 //!   other topmost windows when they get focus.
-//! * Layered windows updated this way are not seen by our BitBlt capture.
 //! * «Своё окно»: translations go into a box the user places. While editing
 //!   (Command::EditBox) the window stops being click-through: drag to move,
 //!   drag an edge or corner to resize, mouse wheel for the font size,
@@ -25,21 +26,23 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DeleteObject, DrawTextW, GdiFlush, GetDC, ReleaseDC, SelectObject,
-    SetBkMode, SetTextColor, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DEFAULT_CHARSET, DIB_RGB_COLORS,
-    DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HDC, HFONT, LOGFONTW, TRANSPARENT,
+    BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DeleteObject, DrawTextW, EndPaint, GdiFlush, GetDC, ReleaseDC,
+    SelectObject, SetBkMode, SetDIBitsToDevice, SetTextColor, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DEFAULT_CHARSET,
+    DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HDC, HFONT, LOGFONTW,
+    PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetWindowLongPtrW, LoadCursorW, PeekMessageW, RegisterClassW,
-    SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, GWL_EXSTYLE, HWND_TOPMOST,
-    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNOACTIVATE, ULW_ALPHA, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONUP,
-    WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SetCursor, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE, HWND_TOPMOST,
+    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LWA_COLORKEY, MSG, PM_REMOVE, SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use wuxia_core::raster::{self, Canvas, Rgba};
 
@@ -90,7 +93,9 @@ fn plate_text(source: &str, translation: &str, pending: bool, error: Option<&Str
     }
 }
 
-fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
+/// `over_ok`: the overlay is hidden from capture, so «Поверх» can erase the
+/// original text; otherwise the translation goes under it.
+fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32, over_ok: bool) -> Vec<El> {
     let mut out = Vec::new();
     if u.selecting_region || u.freeze.is_some() {
         return out; // the region picker / freeze frame is its own window
@@ -157,6 +162,9 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
             let Some((body, dim)) = plate_text(&l.source, &l.translation, l.pending, None, show_original) else { continue };
             let anchor = [l.rect.x, l.rect.y, l.rect.w, l.rect.h];
             let mut position = cfg.dialogue.position.clone();
+            if position == "over" && !over_ok {
+                position = "below".into();
+            }
             if position == "below" && anchor[1] + anchor[3] + 60.0 * scale > screen.1 {
                 position = "above".into();
             }
@@ -179,13 +187,14 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
                 (Some(l), true) => [l.x, l.y, l.w, l.h],
                 _ => [r[0] * screen.0, r[1] * screen.1, r[2] * screen.0, r[3] * screen.1],
             };
+            let position = if cfg.dialogue.position == "over" && !over_ok { "below".to_string() } else { cfg.dialogue.position.clone() };
             out.push(El::Plate {
                 anchor,
                 speaker: if show_original { None } else { d.speaker.clone() },
                 body,
                 dim,
                 size_pt: cfg.dialogue.font_size,
-                position: cfg.dialogue.position.clone(),
+                position,
                 opacity,
                 look: look.clone(),
             });
@@ -236,12 +245,57 @@ struct Op {
     /// Plain rectangles drawn over the fill (frame and handles of the edited box).
     extras: Vec<[i32; 4]>,
     extra_color: Rgba,
+    /// «Поверх»: this screen rectangle shows the game picture with its text
+    /// erased (taken live from the screen), the translation drawn on it.
+    patch: Option<[i32; 4]>,
 }
 
 impl Op {
     fn new(rect: [i32; 4], fill: Rgba, radius: f32, texts: Vec<TextJob>) -> Op {
-        Op { rect, fill, radius, texts, extras: Vec::new(), extra_color: Rgba(0, 0, 0, 0) }
+        Op { rect, fill, radius, texts, extras: Vec::new(), extra_color: Rgba(0, 0, 0, 0), patch: None }
     }
+}
+
+/// «Поверх»: the original line is erased and the translation written in its
+/// place in the game's style (light text with a dark outline), as large as
+/// fits the original's box but not larger than the font size setting.
+#[allow(clippy::too_many_arguments)]
+fn layout_over(anchor: &[f32; 4], speaker: &Option<String>, body: &str, dim: bool, size_pt: f32, look: &Look, g: &mut Gdi, s: f32, screen: (f32, f32)) -> Option<Op> {
+    let [ax, ay, aw, ah] = anchor.map(|v| v.round() as i32);
+    let m = (6.0 * s).round() as i32;
+    let wrap = ((aw as f32 * 1.06) as i32).max((200.0 * s) as i32);
+    let max_px = (size_pt * s).round().max(10.0) as i32;
+    let min_px = (12.0 * s).round().max(9.0) as i32;
+    let mut px = max_px;
+    let (mut bw, mut bh, mut sw, mut sh);
+    loop {
+        (bw, bh) = g.measure(body, px, false, PARA, wrap);
+        (sw, sh) = match speaker {
+            Some(sp) => g.measure(sp, px, true, PARA, wrap),
+            None => (0, 0),
+        };
+        if bh + sh <= ah || px <= min_px {
+            break;
+        }
+        px -= ((px as f32) * 0.06).max(1.0) as i32;
+    }
+    let th = bh + sh;
+    let pw = (aw + 2 * m).max(bw.max(sw) + 2 * m);
+    let ph = (ah + 2 * m).max(th + 2 * m);
+    let x = (ax + aw / 2 - pw / 2).clamp(0, (screen.0 as i32 - pw).max(0));
+    let y = (ay + ah / 2 - ph / 2).clamp(0, (screen.1 as i32 - ph).max(0));
+    let top = y + (ph - th) / 2;
+    let outline = Some((Rgba(0, 0, 0, 200), ((px as f32) / 15.0).round().max(1.0) as i32));
+    let [cr, cg, cb] = look.color;
+    let body_color = if dim { Rgba(((cr as u16 * 9) / 10) as u8, ((cg as u16 * 9) / 10) as u8, ((cb as u16 * 9) / 10) as u8, 255) } else { Rgba(cr, cg, cb, 255) };
+    let mut texts = Vec::new();
+    if let Some(sp) = speaker {
+        texts.push(TextJob { text: sp.clone(), px, bold: true, flags: PARA, x: x + (pw - sw) / 2, y: top, w: sw + 2, h: sh, color: Rgba(look.name[0], look.name[1], look.name[2], 255), outline });
+    }
+    texts.push(TextJob { text: body.to_string(), px, bold: false, flags: PARA, x: x + (pw - bw) / 2, y: top + sh, w: bw + 2, h: bh, color: body_color, outline });
+    let mut op = Op::new([x, y, pw, ph], Rgba(0, 0, 0, 0), 0.0, texts);
+    op.patch = Some([x, y, pw, ph]);
+    Some(op)
 }
 
 const PARA: DRAW_TEXT_FORMAT = DRAW_TEXT_FORMAT(DT_CENTER.0 | DT_WORDBREAK.0 | DT_NOPREFIX.0);
@@ -256,6 +310,9 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
     let s = scale;
     match el {
         El::Plate { anchor, speaker, body, dim, size_pt, position, opacity, look } => {
+            if position == "over" {
+                return layout_over(anchor, speaker, body, *dim, *size_pt, look, g, s, screen);
+            }
             let px = (size_pt * s).round().max(8.0) as i32;
             let wrap = (anchor[2] * 1.1).max(300.0 * s) as i32;
             let (bw, bh) = g.measure(body, px, false, PARA, wrap);
@@ -265,18 +322,11 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
             };
             let (padx, pady) = ((14.0 * s) as i32, (8.0 * s) as i32);
             let (tw, th) = (bw.max(sw), bh + sh);
-            let (mut pw, mut ph) = (tw + 2 * padx, th + 2 * pady);
-            if position == "over" {
-                // Replace the original: cover it completely (with a margin for the
-                // glow around game text), the translation centred inside.
-                let m = 8.0 * s;
-                pw = pw.max((anchor[2] + 2.0 * m) as i32);
-                ph = ph.max((anchor[3] + 2.0 * m) as i32);
-            }
+            let (pw, ph) = (tw + 2 * padx, th + 2 * pady);
             let r = raster::place_plate(*anchor, (pw as f32, ph as f32), position, screen, 6.0 * s);
             let (x, y) = (r[0] as i32, r[1] as i32);
             let top = (ph - th) / 2;
-            let a = if position == "over" { opacity.max(0.95) } else { *opacity };
+            let a = *opacity;
             let outline = look.outline.then(|| (Rgba(0, 0, 0, 200), (1.5 * s).round().max(1.0) as i32));
             let text_color = |dim: bool| {
                 let [r, g, b] = look.color;
@@ -658,6 +708,13 @@ fn dragged(d: &Drag, dx: f32, dy: f32, screen: (f32, f32)) -> [f32; 4] {
 /// Mouse handling while the box is being edited (the window is click-through otherwise).
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        if msg == WM_PAINT {
+            let mut ps = PAINTSTRUCT::default();
+            let dc = BeginPaint(hwnd, &mut ps);
+            blit(dc);
+            let _ = EndPaint(hwnd, &ps);
+            return LRESULT(0);
+        }
         let Some(sh) = SHARED.get() else { return DefWindowProcW(hwnd, msg, wp, lp) };
         let margin = 14.0 * (GetDpiForWindow(hwnd).max(96) as f32 / 96.0);
         match msg {
@@ -735,8 +792,41 @@ struct Window {
     shown: bool,
     /// Not click-through (the box is being edited).
     interactive: bool,
-    ulw_errors: u32,
     first_show_logged: bool,
+    /// Windows hides this window from screen capture: our own captures see the
+    /// game under it (needed for «Поверх» and for live translucency).
+    excluded: bool,
+    /// What is drawn now: laid out once, composed again with a fresh picture of
+    /// the game under it several times a second.
+    cache: Option<Drawn>,
+}
+
+struct Drawn {
+    ops: Vec<Op>,
+    masks: Vec<Vec<Option<Vec<u8>>>>,
+    union: [i32; 4],
+    scale: f32,
+}
+
+/// The last composed picture (width, height, BGRA), for WM_PAINT.
+static IMAGE: Mutex<Option<(i32, i32, Vec<u8>)>> = Mutex::new(None);
+
+unsafe fn blit(dc: HDC) {
+    let img = IMAGE.lock().unwrap();
+    let Some((w, h, px)) = img.as_ref() else { return };
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: *w,
+            biHeight: -*h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    SetDIBitsToDevice(dc, 0, 0, *w as u32, *h as u32, 0, 0, 0, *h as u32, px.as_ptr() as *const std::ffi::c_void, &bmi, DIB_RGB_COLORS);
 }
 
 impl Window {
@@ -759,7 +849,12 @@ impl Window {
             hinst,
             None,
         )?;
-        Ok(Window { hwnd, gdi: Gdi::new(), shown: false, interactive: false, ulw_errors: 0, first_show_logged: false })
+        // Colour-keyed layered window (not UpdateLayeredWindow): only this kind
+        // can be hidden from screen capture on Windows 10 (checked in CI,
+        // tools/probe). Translucency is composed by us over the live game picture.
+        let [b, g, r] = raster::KEY_BGR;
+        SetLayeredWindowAttributes(hwnd, COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16), 0, LWA_COLORKEY)?;
+        Ok(Window { hwnd, gdi: Gdi::new(), shown: false, interactive: false, first_show_logged: false, excluded: false, cache: None })
     }
 
     fn scale(&self) -> f32 {
@@ -793,6 +888,7 @@ impl Window {
     }
 
     fn hide(&mut self) {
+        self.cache = None;
         if self.shown {
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -801,7 +897,12 @@ impl Window {
         }
     }
 
-    /// Lay out, draw and show `els`. Returns the screen rectangles drawn and
+    /// Does the picture need the game under it redrawn now and then?
+    fn live(&self) -> bool {
+        self.excluded && self.cache.as_ref().map_or(false, |c| c.ops.iter().any(|o| o.patch.is_some() || (o.fill.3 > 0 && o.fill.3 < 255)))
+    }
+
+    /// Lay out `els` and draw them. Returns the screen rectangles drawn and
     /// where the marker pixel is.
     fn render(&mut self, els: &[El], screen: (i32, i32), face: &str) -> (Vec<[i32; 4]>, Option<(i32, i32)>) {
         self.gdi.set_face(face);
@@ -811,84 +912,78 @@ impl Window {
         let sf = (screen.0 as f32, screen.1 as f32);
         let ops: Vec<Op> = els.iter().filter_map(|e| layout(e, &mut self.gdi, scale, sf)).collect();
         let rects: Vec<[i32; 4]> = ops.iter().map(|o| o.rect).collect();
-        let Some([bx, by, bw, bh]) = raster::union_rect(&rects, screen) else {
+        let Some(union) = raster::union_rect(&rects, screen) else {
             self.hide();
             return (rects, None);
         };
-        let mut probe: Option<(i32, i32)> = None;
-        // Text masks first (they use the shared GDI DC), then compose.
         let masks: Vec<Vec<Option<Vec<u8>>>> = ops.iter().map(|o| o.texts.iter().map(|t| self.gdi.mask(t)).collect()).collect();
-        unsafe {
-            let screen_dc = GetDC(HWND::default());
-            let dc = CreateCompatibleDC(screen_dc);
-            let Some((bmp, bits)) = dib(dc, bw, bh) else {
-                let _ = windows::Win32::Graphics::Gdi::DeleteDC(dc);
-                ReleaseDC(HWND::default(), screen_dc);
-                return (rects, None);
-            };
-            let old = SelectObject(dc, bmp);
-            {
-                let buf = std::slice::from_raw_parts_mut(bits, (bw * bh * 4) as usize);
-                let mut c = Canvas::new(bw, bh, buf);
-                for (o, ms) in ops.iter().zip(&masks) {
-                    c.fill_round_rect(o.rect[0] - bx, o.rect[1] - by, o.rect[2], o.rect[3], o.radius, o.fill);
-                    for e in &o.extras {
-                        c.fill_round_rect(e[0] - bx, e[1] - by, e[2], e[3], 0.0, o.extra_color);
+        self.cache = Some(Drawn { ops, masks, union, scale });
+        let probe = self.present();
+        (rects, probe)
+    }
+
+    /// Compose the laid-out picture (with the game under it when we can see
+    /// it) and put it on screen. Returns where the marker pixel is.
+    fn present(&mut self) -> Option<(i32, i32)> {
+        let c = self.cache.as_ref()?;
+        let [bx, by, bw, bh] = c.union;
+        let scale = c.scale;
+        // The game under the window: our window is not in this capture.
+        let bg = if self.excluded { crate::capture::capture(crate::capture::PxRect { x: bx, y: by, w: bw, h: bh }).ok().map(|f| f.bgra) } else { None };
+        let mut buf = vec![0u8; (bw * bh * 4) as usize];
+        let mut probe: Option<(i32, i32)> = None;
+        {
+            let mut cv = Canvas::new(bw, bh, &mut buf);
+            for (o, ms) in c.ops.iter().zip(&c.masks) {
+                if let Some([px, py, pw, ph]) = o.patch {
+                    match &bg {
+                        Some(b) => paste_erased(&mut cv, b, bw, [px - bx, py - by, pw, ph], (3.0 * c.scale).round().max(2.0) as usize),
+                        // Cannot see the game: a dark plate instead.
+                        None => cv.fill_round_rect(px - bx, py - by, pw, ph, 8.0 * c.scale, Rgba(0, 0, 0, 235)),
                     }
-                    for (t, m) in o.texts.iter().zip(ms) {
-                        let Some(m) = m else { continue };
-                        let (x, y, w, h) = (t.x - bx, t.y - by, t.w.max(1), t.h.max(1));
-                        match t.outline {
-                            Some((sh, d)) => c.draw_mask_outlined(m, w, h, x, y, t.color, sh, d),
-                            None => c.draw_mask(m, w, h, x, y, t.color),
-                        }
+                }
+                if o.fill.3 > 0 {
+                    cv.fill_round_rect(o.rect[0] - bx, o.rect[1] - by, o.rect[2], o.rect[3], o.radius, o.fill);
+                }
+                for e in &o.extras {
+                    cv.fill_round_rect(e[0] - bx, e[1] - by, e[2], e[3], 0.0, o.extra_color);
+                }
+                for (t, m) in o.texts.iter().zip(ms) {
+                    let Some(m) = m else { continue };
+                    let (x, y, w, h) = (t.x - bx, t.y - by, t.w.max(1), t.h.max(1));
+                    match t.outline {
+                        Some((sh, d)) => cv.draw_mask_outlined(m, w, h, x, y, t.color, sh, d),
+                        None => cv.draw_mask(m, w, h, x, y, t.color),
                     }
                 }
             }
             // Marker pixels (see `capture::overlay_seen`) inside the first dark plate.
-            probe = ops.iter().find(|o| o.fill.3 >= 150 && (o.fill.0 as u16 + o.fill.1 as u16 + o.fill.2 as u16) < 90 && o.rect[2] > 40 && o.rect[3] > 12).map(|o| {
-                (o.rect[0] + o.rect[2] / 2, o.rect[1] + 2)
-            });
+            probe = c
+                .ops
+                .iter()
+                .find(|o| o.patch.is_none() && o.fill.3 >= 150 && (o.fill.0 as u16 + o.fill.1 as u16 + o.fill.2 as u16) < 90 && o.rect[2] > 40 && o.rect[3] > 12)
+                .map(|o| (o.rect[0] + o.rect[2] / 2, o.rect[1] + 2));
             if let Some((px, py)) = probe {
-                let buf = std::slice::from_raw_parts_mut(bits, (bw * bh * 4) as usize);
                 let [b, g, r] = crate::capture::PROBE_BGR;
                 for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                     let (x, y) = (px - bx + dx, py - by + dy);
                     if x >= 0 && y >= 0 && x < bw && y < bh {
                         let i = ((y * bw + x) * 4) as usize;
-                        buf[i..i + 4].copy_from_slice(&[b, g, r, 255]);
+                        cv.px[i..i + 4].copy_from_slice(&[b, g, r, 255]);
                     }
                 }
             }
-            let dst = POINT { x: bx, y: by };
-            let size = SIZE { cx: bw, cy: bh };
-            let src = POINT { x: 0, y: 0 };
-            let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: 1 };
-            let r = UpdateLayeredWindow(
-                self.hwnd,
-                screen_dc,
-                Some(&dst as *const POINT),
-                Some(&size as *const SIZE),
-                dc,
-                Some(&src as *const POINT),
-                COLORREF(0),
-                Some(&blend as *const BLENDFUNCTION),
-                ULW_ALPHA,
-            );
-            SelectObject(dc, old);
-            let _ = DeleteObject(bmp);
-            let _ = windows::Win32::Graphics::Gdi::DeleteDC(dc);
-            ReleaseDC(HWND::default(), screen_dc);
-            if let Err(e) = r {
-                self.ulw_errors += 1;
-                if self.ulw_errors <= 3 {
-                    tracing::warn!("оверлей: UpdateLayeredWindow: {e}");
-                }
-                return (rects, None);
-            }
+        }
+        let mut out = vec![0u8; buf.len()];
+        raster::flatten(&buf, bg.as_deref(), &mut out);
+        *IMAGE.lock().unwrap() = Some((bw, bh, out));
+        unsafe {
+            let flags = SWP_NOACTIVATE | if self.shown { SET_WINDOW_POS_FLAGS(0) } else { SWP_SHOWWINDOW };
+            let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, bx, by, bw, bh, flags);
+            let dc = GetDC(self.hwnd);
+            blit(dc);
+            ReleaseDC(self.hwnd, dc);
             if !self.shown {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                self.raise();
                 self.shown = true;
                 if !self.first_show_logged {
                     self.first_show_logged = true;
@@ -896,7 +991,35 @@ impl Window {
                 }
             }
         }
-        (rects, probe)
+        probe
+    }
+}
+
+/// Copy the game picture of `r` (canvas coordinates) from `bg` into the canvas,
+/// with its text erased.
+fn paste_erased(cv: &mut Canvas, bg: &[u8], stride_w: i32, r: [i32; 4], radius: usize) {
+    let [x0, y0, w, h] = r;
+    let (x0, y0) = (x0.max(0), y0.max(0));
+    let (w, h) = (w.min(cv.w - x0), h.min(cv.h - y0));
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let mut tmp = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        let s = (((y0 + y) * stride_w + x0) * 4) as usize;
+        let d = (y * w * 4) as usize;
+        if s + (w * 4) as usize <= bg.len() {
+            tmp[d..d + (w * 4) as usize].copy_from_slice(&bg[s..s + (w * 4) as usize]);
+        }
+    }
+    raster::erase_text(&mut tmp, w as usize, h as usize, false, radius);
+    for y in 0..h {
+        for x in 0..w {
+            let si = ((y * w + x) * 4) as usize;
+            let di = (((y0 + y) * cv.w + x0 + x) * 4) as usize;
+            cv.px[di..di + 3].copy_from_slice(&tmp[si..si + 3]);
+            cv.px[di + 3] = 255;
+        }
     }
 }
 
@@ -912,11 +1035,13 @@ pub fn spawn(shared: Arc<Shared>) {
                 return;
             }
         };
-        tracing::info!("оверлей: окно создано (layered, topmost)");
+        tracing::info!("оверлей: окно создано (layered, цветовой ключ, topmost)");
         let mut applied_visibility: Option<bool> = None;
         let mut affinity_failed: Option<(bool, Instant)> = None;
+        let mut over_notice = false;
         let mut last: Option<(Vec<El>, (i32, i32), String)> = None;
         let mut last_raise = Instant::now();
+        let mut last_live = Instant::now();
         loop {
             unsafe {
                 let mut msg = MSG::default();
@@ -926,50 +1051,55 @@ pub fn spawn(shared: Arc<Shared>) {
                 }
             }
             let cfg = shared.cfg();
-            // «Поверх»: the plate covers the original text, so our own capture must
-            // see through it — the overlay is hidden from capture in this mode.
+            // «Поверх» needs the overlay hidden from capture (our OCR and the
+            // erased-text patch must see the game under it).
             let want = cfg.general.visible_in_screenshots && cfg.dialogue.position != "over";
-            // Windows may refuse while the layered window has nothing drawn yet
-            // (error 8, «недостаточно ресурсов памяти» in the logs): try again
-            // once it is on screen, every few seconds.
-            let retry = affinity_failed.map_or(false, |(v, t): (bool, Instant)| v == want && w.shown && t.elapsed() > Duration::from_secs(3));
+            let retry = affinity_failed.map_or(false, |(v, t): (bool, Instant)| v == want && w.shown && t.elapsed() > Duration::from_secs(5));
             if applied_visibility != Some(want) || retry {
                 match crate::win::set_capture_visible(w.hwnd.0 as isize, want) {
                     Ok(()) => {
-                        tracing::info!("оверлей: видимость на скриншотах = {want}{}", if w.shown { "" } else { " (окно скрыто)" });
+                        tracing::info!("оверлей: видимость на скриншотах = {want}");
                         affinity_failed = None;
-                        *shared.overlay_in_capture.lock().unwrap() = None; // check again
+                        w.excluded = !want;
+                        *shared.overlay_in_capture.lock().unwrap() = Some(want);
                     }
                     Err(e) => {
                         if affinity_failed.is_none() || applied_visibility != Some(want) {
-                            tracing::info!("оверлей: видимость на скриншотах не изменена ({e}){}", if w.shown { "" } else { " — повторю, когда окно появится" });
+                            tracing::info!("оверлей: видимость на скриншотах не изменена ({e})");
                         }
                         affinity_failed = Some((want, Instant::now()));
+                        w.excluded = false;
+                        *shared.overlay_in_capture.lock().unwrap() = Some(true);
                     }
                 }
                 applied_visibility = Some(want);
+                last = None; // compose again with / without the game picture
             }
-            // A reader wants to look under the plates for a moment.
-            if shared.hide_overlay.load(Ordering::SeqCst) {
-                w.hide();
-                *shared.overlay_probe.lock().unwrap() = None;
-                shared.overlay_hidden.store(true, Ordering::SeqCst);
-                last = None; // draw again afterwards
-                std::thread::sleep(Duration::from_millis(5));
-                continue;
+            if cfg.dialogue.position == "over" && !w.excluded && affinity_failed.is_some() && !over_notice {
+                over_notice = true;
+                shared.ui(|u| u.notice("На этом ПК Windows не даёт спрятать окно перевода от захвата экрана, поэтому перевод показан под текстом игры, а не вместо него."));
             }
-            shared.overlay_hidden.store(false, Ordering::SeqCst);
             let screen = crate::win::screen_size();
             let scale = w.scale();
             let (els, editing) = {
                 let u = shared.ui.lock().unwrap();
-                (scene(&u, &cfg, (screen.0 as f32, screen.1 as f32), scale), u.edit_box)
+                (scene(&u, &cfg, (screen.0 as f32, screen.1 as f32), scale, w.excluded), u.edit_box)
             };
             w.set_interactive(editing);
             let face = cfg.dialogue.overlay_font.clone();
+            let mut probe_now: Option<Option<(i32, i32)>> = None;
             if last.as_ref().map_or(true, |(e, s, f)| *e != els || *s != screen || *f != face) {
                 let (rects, probe) = w.render(&els, screen, &face);
                 *shared.overlay_px.lock().unwrap() = rects;
+                probe_now = Some(probe);
+                last = Some((els, screen, face));
+                last_live = Instant::now();
+            } else if w.shown && w.live() && last_live.elapsed() >= Duration::from_millis(100) {
+                // The game moves under translucent plates and erased text: ~10 times a second.
+                probe_now = Some(w.present());
+                last_live = Instant::now();
+            }
+            if let Some(probe) = probe_now {
                 let mut p = shared.overlay_probe.lock().unwrap();
                 // Keep the time if the marker did not move (the check waits for it to be on screen).
                 *p = match (probe, *p) {
@@ -977,13 +1107,12 @@ pub fn spawn(shared: Arc<Shared>) {
                     (Some((x, y)), _) => Some((x, y, Instant::now())),
                     (None, _) => None,
                 };
-                last = Some((els, screen, face));
             }
             if w.shown && last_raise.elapsed() > Duration::from_millis(500) {
                 unsafe { w.raise() };
                 last_raise = Instant::now();
             }
-            std::thread::sleep(Duration::from_millis(33));
+            std::thread::sleep(Duration::from_millis(if w.live() { 15 } else { 33 }));
         }
     });
     if let Err(e) = r {

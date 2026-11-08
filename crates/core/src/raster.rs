@@ -127,6 +127,188 @@ pub fn union_rect(rects: &[[i32; 4]], screen: (i32, i32)) -> Option<[i32; 4]> {
     (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
 }
 
+// ---------------------------------------------------------------- opaque window
+
+/// Colour key of the overlay window, B, G, R: pixels of exactly this colour are
+/// transparent. (A colour-keyed layered window can be hidden from screen
+/// capture on Windows 10, a per-pixel-alpha one cannot.)
+pub const KEY_BGR: [u8; 3] = [254, 0, 255];
+
+/// Make the premultiplied `canvas` opaque for the colour-keyed window: fully
+/// transparent pixels become the key colour; the rest is composed over `bg`
+/// (the game picture under the window, same size, BGRA) — or, without a
+/// background, made solid.
+pub fn flatten(canvas: &[u8], bg: Option<&[u8]>, out: &mut [u8]) {
+    for (i, (c, o)) in canvas.chunks_exact(4).zip(out.chunks_exact_mut(4)).enumerate() {
+        let a = c[3] as u32;
+        if a == 0 {
+            o[..3].copy_from_slice(&KEY_BGR);
+            o[3] = 255;
+            continue;
+        }
+        let mut px = [0u8; 3];
+        for k in 0..3 {
+            px[k] = match bg {
+                Some(b) if a < 255 => (c[k] as u32 + b[i * 4 + k] as u32 * (255 - a) / 255).min(255) as u8,
+                None if a < 255 => (c[k] as u32 * 255 / a).min(255) as u8,
+                _ => c[k],
+            };
+        }
+        if px == KEY_BGR {
+            px[0] -= 1; // never punch a hole by accident
+        }
+        o[..3].copy_from_slice(&px);
+        o[3] = 255;
+    }
+}
+
+fn luma(p: &[u8]) -> u8 {
+    ((p[2] as u32 * 77 + p[1] as u32 * 150 + p[0] as u32 * 29) >> 8) as u8
+}
+
+/// Remove text from a picture (BGRA, `w`×`h`): text pixels — much lighter
+/// (or, with `dark_text`, darker) than the picture overall — and `r` pixels
+/// around them (outline, shadow, anti-aliasing) are filled in from the
+/// surrounding background, row by row, then smoothed vertically.
+/// Returns how many pixels were replaced.
+pub fn erase_text(px: &mut [u8], w: usize, h: usize, dark_text: bool, r: usize) -> usize {
+    if w == 0 || h == 0 || px.len() < w * h * 4 {
+        return 0;
+    }
+    let lum: Vec<u8> = px.chunks_exact(4).take(w * h).map(luma).collect();
+    let mut sorted = lum.clone();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2] as i32;
+    let core: Vec<bool> = if dark_text {
+        let t = (median - 55).min(90);
+        lum.iter().map(|&l| (l as i32) <= t).collect()
+    } else {
+        let t = (median + 55).max(170);
+        lum.iter().map(|&l| (l as i32) >= t).collect()
+    };
+    // Dilate: horizontal then vertical running window.
+    let r = r as isize;
+    let mut tmp = vec![false; w * h];
+    for y in 0..h {
+        let row = &core[y * w..(y + 1) * w];
+        // Distance to the nearest core pixel along the row, both directions.
+        let mut near = vec![false; w];
+        let mut last: isize = -10_000;
+        for x in 0..w {
+            if row[x] {
+                last = x as isize;
+            }
+            near[x] = x as isize - last <= r;
+        }
+        last = 10_000_000;
+        for x in (0..w).rev() {
+            if row[x] {
+                last = x as isize;
+            }
+            if last - x as isize <= r {
+                near[x] = true;
+            }
+        }
+        tmp[y * w..(y + 1) * w].copy_from_slice(&near);
+    }
+    let mut mask = vec![false; w * h];
+    for x in 0..w {
+        let mut last: isize = -10_000;
+        for y in 0..h {
+            if tmp[y * w + x] {
+                last = y as isize;
+            }
+            if y as isize - last <= r {
+                mask[y * w + x] = true;
+            }
+        }
+        last = 10_000_000;
+        for y in (0..h).rev() {
+            if tmp[y * w + x] {
+                last = y as isize;
+            }
+            if last - y as isize <= r {
+                mask[y * w + x] = true;
+            }
+        }
+    }
+    let n = mask.iter().filter(|&&m| m).count();
+    if n == 0 {
+        return 0;
+    }
+    // Rows: linear fill between the background pixels on both sides of a run.
+    let mut unresolved = vec![false; w * h];
+    for y in 0..h {
+        let mut x = 0;
+        while x < w {
+            if !mask[y * w + x] {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < w && mask[y * w + x] {
+                x += 1;
+            }
+            let (l, rr) = (start.checked_sub(1), (x < w).then_some(x));
+            for xi in start..x {
+                let i = (y * w + xi) * 4;
+                match (l, rr) {
+                    (Some(a), Some(b)) => {
+                        let t = (xi - a) as f32 / (b - a) as f32;
+                        for k in 0..3 {
+                            let (pa, pb) = (px[(y * w + a) * 4 + k] as f32, px[(y * w + b) * 4 + k] as f32);
+                            px[i + k] = (pa + (pb - pa) * t).round() as u8;
+                        }
+                    }
+                    (Some(a), None) | (None, Some(a)) => {
+                        for k in 0..3 {
+                            px[i + k] = px[(y * w + a) * 4 + k];
+                        }
+                    }
+                    (None, None) => unresolved[y * w + xi] = true,
+                }
+            }
+        }
+    }
+    // Rows that were all text: take the nearest resolved row.
+    for x in 0..w {
+        for y in 0..h {
+            if !unresolved[y * w + x] {
+                continue;
+            }
+            let up = (0..y).rev().find(|&yy| !unresolved[yy * w + x]);
+            let down = (y + 1..h).find(|&yy| !unresolved[yy * w + x]);
+            if let Some(src) = up.or(down) {
+                for k in 0..3 {
+                    px[(y * w + x) * 4 + k] = px[(src * w + x) * 4 + k];
+                }
+            }
+        }
+    }
+    // Smooth the filled pixels vertically (rows were filled independently).
+    let rad = (r * 2).max(2) as usize;
+    let src = px.to_vec();
+    for x in 0..w {
+        for y in 0..h {
+            if !mask[y * w + x] {
+                continue;
+            }
+            let (y0, y1) = (y.saturating_sub(rad), (y + rad).min(h - 1));
+            let mut acc = [0u32; 3];
+            for yy in y0..=y1 {
+                for k in 0..3 {
+                    acc[k] += src[(yy * w + x) * 4 + k] as u32;
+                }
+            }
+            let cnt = (y1 - y0 + 1) as u32;
+            for k in 0..3 {
+                px[(y * w + x) * 4 + k] = (acc[k] / cnt) as u8;
+            }
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +360,51 @@ mod tests {
         assert_eq!(union_rect(&[], (100, 100)), None);
         assert_eq!(union_rect(&[[10, 10, 5, 5], [50, 40, 100, 10]], (100, 100)), Some([10, 10, 90, 40]));
         assert_eq!(union_rect(&[[-10, -10, 5, 5]], (100, 100)), None);
+    }
+
+    #[test]
+    fn flatten_keys_and_composes() {
+        let canvas = [0, 0, 0, 0, 0, 0, 0, 128, 10, 20, 30, 255];
+        let bg = [100, 100, 100, 255, 200, 200, 200, 255, 0, 0, 0, 255];
+        let mut out = [0u8; 12];
+        flatten(&canvas, Some(&bg), &mut out);
+        assert_eq!(&out[0..3], &KEY_BGR);
+        assert_eq!(out[4], (200 * 127 / 255) as u8); // black at half alpha over grey
+        assert_eq!(&out[8..11], &[10, 20, 30]);
+        flatten(&canvas, None, &mut out);
+        assert_eq!(&out[4..7], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn erase_text_fills_from_background() {
+        // Horizontal gradient background with a white "word" in the middle.
+        let (w, h) = (60usize, 20usize);
+        let mut px = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let v = 40 + x as u8;
+                let i = (y * w + x) * 4;
+                px[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let orig = px.clone();
+        for y in 7..13 {
+            for x in 20..40 {
+                let i = (y * w + x) * 4;
+                px[i..i + 3].copy_from_slice(&[250, 250, 250]);
+            }
+        }
+        let n = erase_text(&mut px, w, h, false, 2);
+        assert!(n >= 6 * 20, "erased {n}");
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                assert!((px[i] as i32 - orig[i] as i32).abs() <= 3, "pixel {x},{y}: {} vs {}", px[i], orig[i]);
+            }
+        }
+        // Nothing to erase on a plain picture.
+        let mut flat = orig.clone();
+        assert_eq!(erase_text(&mut flat, w, h, false, 2), 0);
+        assert_eq!(flat, orig);
     }
 }

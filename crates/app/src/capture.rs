@@ -70,10 +70,6 @@ pub fn capture_clean(shared: &crate::state::Shared, r: PxRect) -> anyhow::Result
 /// overlay draws (`Shared::overlay_probe`); the answer is remembered for
 /// captures that do not cover the marker. Unknown counts as "yes" (blank it).
 fn overlay_seen(shared: &crate::state::Shared, f: &Frame, r: PxRect) -> bool {
-    use std::sync::atomic::Ordering;
-    if shared.overlay_hidden.load(Ordering::SeqCst) {
-        return false;
-    }
     let probe = *shared.overlay_probe.lock().unwrap();
     let mut known = shared.overlay_in_capture.lock().unwrap();
     if let Some((px, py, since)) = probe {
