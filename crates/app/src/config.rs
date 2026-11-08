@@ -400,6 +400,33 @@ impl Config {
         self.models.iter().find(|m| m.id == self.llm.active_model).unwrap_or(&self.models[0])
     }
 
+    /// Which preset a user-chosen .gguf belongs to, by its file name
+    /// ("Hy-MT2-7B-Q4_K_M.gguf" → hymt2-7b); unknown files replace the active model.
+    pub fn preset_for_file(&self, path: &std::path::Path) -> String {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let name = name.replace(['-', '_', ' '], "");
+        let guess = if name.contains("hymt") || name.contains("hunyuan") {
+            if name.contains("7b") {
+                "hymt2-7b"
+            } else {
+                "hymt2-1.8b"
+            }
+        } else if name.contains("qwen") {
+            if name.contains("4b") {
+                "qwen3.5-4b"
+            } else {
+                "qwen3.5-2b"
+            }
+        } else {
+            ""
+        };
+        if self.models.iter().any(|m| m.id == guess) {
+            guess.to_string()
+        } else {
+            self.active_model().id.clone()
+        }
+    }
+
     pub fn active_model_mut(&mut self) -> &mut ModelPreset {
         let id = self.llm.active_model.clone();
         let idx = self.models.iter().position(|m| m.id == id).unwrap_or(0);

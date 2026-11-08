@@ -17,6 +17,8 @@ mod config;
 #[cfg(windows)]
 mod dialogue;
 #[cfg(windows)]
+mod filepick;
+#[cfg(windows)]
 mod hotkeys;
 #[cfg(windows)]
 mod interface;
@@ -337,6 +339,22 @@ mod app {
                     let _ = srv.send(ServerCmd::Restart);
                 }
                 Command::RestartServer => {
+                    let _ = srv.send(ServerCmd::Restart);
+                }
+                Command::UseModelFile(path) => {
+                    let id = {
+                        let mut c = shared.cfg.write().unwrap();
+                        let id = c.preset_for_file(&path);
+                        if let Some(m) = c.models.iter_mut().find(|m| m.id == id) {
+                            m.path = path.display().to_string();
+                        }
+                        c.llm.active_model = id.clone();
+                        id
+                    };
+                    shared.save_config();
+                    tr.clear_history();
+                    tracing::info!("модель из файла: {} → {id}", path.display());
+                    shared.ui(|u| u.notice(format!("Модель берётся из файла {} — скачивать ничего не нужно.", path.display())));
                     let _ = srv.send(ServerCmd::Restart);
                 }
                 Command::SaveCorrection { src, dst } => {

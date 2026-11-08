@@ -41,6 +41,8 @@ pub enum Command {
     TogglePanel,
     ShowPanel,
     SwitchModel(String),
+    /// Use a .gguf file the user chose instead of downloading the model.
+    UseModelFile(std::path::PathBuf),
     RestartServer,
     SaveCorrection { src: String, dst: String },
     TestTranslate(String),

@@ -557,8 +557,30 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
                 if ui.small_button("Перезапустить").clicked() {
                     shared.send(Command::RestartServer);
                 }
+                if ui.small_button("Свой файл модели…").on_hover_text("Если модель не скачивается: скачайте файл .gguf сами и укажите его здесь").clicked() {
+                    let sh = shared.clone();
+                    std::thread::spawn(move || {
+                        if let Some(p) = crate::filepick::pick_gguf() {
+                            sh.send(Command::UseModelFile(p));
+                        }
+                    });
+                }
             });
         });
+        // The first download is slow or fails (HuggingFace unreachable): offer the manual way.
+        let downloading = !std::path::Path::new(&current.path).exists();
+        let stuck = match &server {
+            Some(crate::state::ServerStatus::Failed(_)) => true,
+            Some(crate::state::ServerStatus::Starting(m)) => m.contains("первая загрузка"),
+            _ => false,
+        };
+        if downloading && stuck {
+            hint(ui, "Не скачивается? Скачайте файл модели в браузере (файл .gguf с «Q4_K_M» в названии) и нажмите «Свой файл модели…».");
+            let repo = current.hf.split(':').next().unwrap_or("");
+            if !repo.is_empty() {
+                ui.hyperlink_to(format!("huggingface.co/{repo}"), format!("https://huggingface.co/{repo}/tree/main"));
+            }
+        }
     });
     ui.add_space(8.0);
 
