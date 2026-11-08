@@ -166,9 +166,16 @@ pub struct Interface {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Ocr {
-    /// BCP-47 tag for Windows OCR. Requires the Windows language pack's OCR
-    /// component (Settings → Time & Language → Language → Add "中文(简体)").
+    /// Deprecated: the OCR language comes from `general.source_lang`.
     pub language: String,
+    /// "paddle" (PaddleOCR, falls back to Windows OCR), "windows", or "both".
+    pub engine: String,
+    /// PP-OCRv6 tier: "tiny" (fastest), "small" (bundled), "medium" (most accurate).
+    pub paddle_model: String,
+    /// CPU threads for PaddleOCR.
+    pub paddle_threads: i32,
+    /// Longer side of the picture for PaddleOCR text detection, px.
+    pub paddle_max_side: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,7 +351,7 @@ impl Default for Interface {
 
 impl Default for Ocr {
     fn default() -> Self {
-        Self { language: "zh-Hans-CN".into() }
+        Self { language: "zh-Hans-CN".into(), engine: "paddle".into(), paddle_model: "small".into(), paddle_threads: 2, paddle_max_side: 1600 }
     }
 }
 

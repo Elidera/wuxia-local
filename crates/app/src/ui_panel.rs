@@ -436,7 +436,7 @@ fn header(ui: &mut Ui, shared: &Arc<Shared>) {
 fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
     let cfg = shared.cfg();
     let hk = cfg.hotkeys.clone();
-    let (server, dialogue_on, show_original, stats, notices, ocr_status, has_interface) = {
+    let (server, dialogue_on, show_original, stats, notices, ocr_status, has_interface, ocr_engine) = {
         let u = shared.ui.lock().unwrap();
         (
             u.server.clone(),
@@ -446,6 +446,7 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
             u.notices.iter().cloned().collect::<Vec<_>>(),
             u.ocr_status.clone(),
             u.interface.is_some(),
+            if u.ocr_engine.is_empty() { "Windows OCR" } else { u.ocr_engine },
         )
     };
 
@@ -477,10 +478,10 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
                 _ => String::new(),
             };
             let ocr_title = match cfg.source_lang() {
-                wuxia_core::lang::Lang::En => "Распознавание английского текста (Windows OCR)",
-                wuxia_core::lang::Lang::Zh => "Распознавание китайского текста (Windows OCR)",
+                wuxia_core::lang::Lang::En => format!("Распознавание английского текста ({ocr_engine})"),
+                wuxia_core::lang::Lang::Zh => format!("Распознавание китайского текста ({ocr_engine})"),
             };
-            check_item(ui, ocr_ok, ocr_title, &ocr_detail);
+            check_item(ui, ocr_ok, &ocr_title, &ocr_detail);
             ui.horizontal(|ui| {
                 let (title, detail) = if auto_mode {
                     ("Текст ищется по всему экрану (авто)", "")

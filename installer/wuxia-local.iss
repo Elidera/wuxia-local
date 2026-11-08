@@ -3,7 +3,7 @@
 ; Installs per-user (no admin rights) into %LOCALAPPDATA%\Programs\WuxiaLocal.
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.3.0"
 #endif
 #ifndef Dist
   #define Dist "..\dist"
@@ -46,7 +46,7 @@ Name: "cpu"; Description: "Нейросетевой движок llama.cpp (то
 
 [Tasks]
 Name: "desktopicon"; Description: "Ярлык на рабочем столе"
-Name: "ocr"; Description: "Установить модули распознавания текста Windows — английский и китайский (нужны права администратора, ~20 МБ)"
+Name: "ocr"; Description: "Установить запасной движок распознавания Windows OCR — английский и китайский (нужны права администратора, ~20 МБ). Основной движок PaddleOCR входит в установку."
 
 [InstallDelete]
 ; Renamed in 0.2 to wwm_wuxia_common.tsv (loaded only for Where Winds Meet).
@@ -60,6 +60,7 @@ Source: "{#Dist}\LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversi
 Source: "{#Dist}\LLAMA_VERSION.txt"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#Dist}\glossary\*"; DestDir: "{app}\glossary"; Components: app; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\bench\*"; DestDir: "{app}\bench"; Components: app; Flags: ignoreversion recursesubdirs
+Source: "{#Dist}\ocr\*"; DestDir: "{app}\ocr"; Components: app; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\llama-vulkan\*"; DestDir: "{app}\llama"; Components: vulkan; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\llama-cpu\*"; DestDir: "{app}\llama"; Components: cpu; Flags: ignoreversion recursesubdirs
 

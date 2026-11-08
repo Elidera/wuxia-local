@@ -142,6 +142,19 @@ auto_hide = true
 [ocr]
 # Устарело: язык распознавания берётся из general.source_lang.
 language = "zh-Hans-CN"
+# Движок распознавания текста:
+#   paddle  — PaddleOCR (по умолчанию; точнее на китайском, языковые пакеты Windows не нужны;
+#             если не загрузился — автоматически Windows OCR)
+#   windows — встроенный Windows OCR
+#   both    — оба движка, для каждого места берётся лучшее прочтение (медленнее)
+engine = "paddle"
+# Модель PaddleOCR (PP-OCRv6): small — входит в установку; tiny — быстрее; medium — точнее.
+# Файлы tiny/medium кладутся в папку данных models\ocr.
+paddle_model = "small"
+# Потоки процессора для PaddleOCR
+paddle_threads = 2
+# Длинная сторона кадра для поиска текста (больше — видит мелкий текст, но медленнее)
+paddle_max_side = 1600
 
 [hotkeys]
 # Примеры: "F7", "Ctrl+F7", "Alt+Shift+T". Назначенная клавиша не передаётся в игру.

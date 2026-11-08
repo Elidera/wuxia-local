@@ -31,6 +31,9 @@ jobs:
     env:
       LLAMA_TAG: ${{ github.event.inputs.llama_tag }}
       GH_TOKEN: ${{ github.token }}
+      # ocr-rs generates its MNN bindings with bindgen (needs libclang).
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      OCR_RS_TAG: v2.4.1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -74,6 +77,17 @@ jobs:
           }
           "$tag" | Out-File dist/LLAMA_VERSION.txt
 
+      - name: PaddleOCR models (PP-OCRv6 small)
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch $env:OCR_RS_TAG https://github.com/zibo-chen/rust-paddle-ocr dl/ocr-rs
+          New-Item -ItemType Directory -Force dist/ocr | Out-Null
+          foreach ($f in "PP-OCRv6_small_det.mnn","PP-OCRv6_small_rec.mnn","ppocr_keys_v6_small.txt") {
+            Copy-Item "dl/ocr-rs/models/$f" dist/ocr/
+          }
+          Copy-Item dl/ocr-rs/LICENSE dist/ocr/LICENSE-ocr-rs.txt
+          Get-ChildItem dist/ocr | Format-Table Name, Length
+
       - name: Stage files
         shell: pwsh
         run: |
@@ -90,14 +104,14 @@ jobs:
           Get-WindowsCapability -Online -Name "Language.OCR*en-US*" | Format-Table Name, State
           Get-WindowsCapability -Online -Name "Language.OCR*en-US*" | Where-Object State -ne Installed | Add-WindowsCapability -Online
 
-      - name: Screenshot tests (real Windows OCR on tests/screens)
+      - name: Screenshot tests (PaddleOCR, Windows OCR and both on tests/screens)
         shell: pwsh
         continue-on-error: true
         run: |
           $p = Start-Process -FilePath dist\wuxia-local.exe -ArgumentList '--selftest','tests\screens','--out','selftest-report.md' -Wait -PassThru
           Write-Host "exit code $($p.ExitCode)"
           if (Test-Path selftest-report.md) { Get-Content selftest-report.md }
-          if ($p.ExitCode -eq 2) { Write-Host "::warning::Windows OCR is not available on the runner - screenshot tests skipped"; exit 0 }
+          if ($p.ExitCode -eq 2) { Write-Host "::warning::OCR is not available on the runner - screenshot tests skipped"; exit 0 }
           exit $p.ExitCode
 
       - name: Portable zip

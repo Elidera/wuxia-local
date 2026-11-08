@@ -217,8 +217,10 @@ pub struct UiState {
     pub server: Option<ServerStatus>,
     pub bench_progress: Option<String>,
     pub ocr_debug: Option<OcrDebug>,
-    /// Windows OCR availability (None = not checked yet).
+    /// OCR availability (None = not checked yet).
     pub ocr_status: Option<Result<(), String>>,
+    /// Name of the OCR engine in use ("PaddleOCR", "Windows OCR", …).
+    pub ocr_engine: &'static str,
     /// (glossary terms, fix rules)
     pub dict_counts: (usize, usize),
     /// Result of the panel's "check translation" field.

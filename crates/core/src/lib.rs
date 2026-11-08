@@ -14,6 +14,7 @@ pub mod image;
 pub mod lang;
 pub mod layout;
 pub mod memory;
+pub mod ocr_pick;
 pub mod prompt;
 pub mod raster;
 pub mod selftest;

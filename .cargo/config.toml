@@ -1,0 +1,5 @@
+# PaddleOCR (ocr-rs) links the MNN runtime statically, built with the static C
+# runtime (/MT): the whole program uses it too. Bonus: no Visual C++
+# Redistributable is needed on the user's PC.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

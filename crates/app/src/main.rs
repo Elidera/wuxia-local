@@ -31,6 +31,8 @@ mod mascot;
 #[cfg(windows)]
 mod ocr;
 #[cfg(windows)]
+mod paddle;
+#[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
 mod paths;
@@ -155,14 +157,22 @@ mod app {
         }
 
         // OCR.
-        let ocr = match Ocr::spawn() {
+        let ocr = match Ocr::spawn_with(&cfg.ocr, &[paths.models().join("ocr"), paths.install.join("ocr")]) {
             Ok(o) => {
                 // A missing language pack is not fatal: the user may install it or switch the language.
                 let status = o.check_blocking(cfg.source_lang()).map_err(|e| e.to_string());
-                tracing::info!("Windows OCR ({}): {:?} · макс. размер {} px", cfg.source_lang().name_ru(), status, o.max_dim);
+                tracing::info!(
+                    "OCR: {} ({}): {:?} · Windows OCR макс. размер {} px",
+                    o.engine().name_ru(),
+                    cfg.source_lang().name_ru(),
+                    status,
+                    o.max_dim
+                );
                 let failed = status.is_err();
+                let engine = o.engine().name_ru();
                 shared.ui(|u| {
                     u.ocr_status = Some(status);
+                    u.ocr_engine = engine;
                     if failed {
                         u.panel_open = true;
                     }
@@ -382,9 +392,11 @@ mod app {
                         Some(o) => o.check(cfg.source_lang()).await.map_err(|e| e.to_string()),
                         None => Err("OCR не запущен".into()),
                     };
+                    let engine = ocr.as_ref().map_or("Windows OCR", |o| o.engine().name_ru());
                     shared.ui(|u| {
                         u.dict_counts = (n, f);
                         u.ocr_status = Some(status);
+                        u.ocr_engine = engine;
                     });
                     shared.save_config();
                 }
