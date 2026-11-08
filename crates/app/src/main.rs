@@ -261,10 +261,14 @@ mod app {
                         tokio::spawn(async move {
                             // The panel would be photographed and "translated" too: hide it
                             // first and give Windows time to take it off the screen.
+                            // Pressed in the panel: the panel goes to the tray either way.
                             let was_open = sh.ui.lock().unwrap().panel_open;
-                            if was_open && sh.ui.lock().unwrap().interface.is_none() {
+                            if was_open {
                                 sh.ui(|u| u.panel_open = false);
-                                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                                sh.send(Command::PanelClosedToTray);
+                                if sh.ui.lock().unwrap().interface.is_none() {
+                                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                                }
                             }
                             interface::toggle(sh, tr, o).await;
                         });

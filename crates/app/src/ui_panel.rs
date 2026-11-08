@@ -237,6 +237,13 @@ fn segmented(ui: &mut Ui, value: &mut String, options: &[(&str, &str)]) -> bool 
     changed
 }
 
+/// Hide the panel to the tray (like ✕): after a translation button the game
+/// should be visible right away; the panel comes back on F10 or the tray icon.
+fn to_tray(shared: &Arc<Shared>) {
+    shared.ui(|u| u.panel_open = false);
+    shared.send(Command::PanelClosedToTray);
+}
+
 fn big_action(ui: &mut Ui, title: &str, subtitle: &str, key: &str, active: bool, width: f32) -> bool {
     let fill = if active { Color32::from_rgb(64, 52, 30) } else { CARD_HI };
     let stroke = if active { Stroke::new(1.5, GOLD) } else { Stroke::new(1.0, Color32::from_rgb(52, 56, 66)) };
@@ -509,6 +516,9 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
         let (title, sub) = if dialogue_on { ("Диалоги включены", "Субтитры переводятся автоматически") } else { ("Диалоги выключены", "Нажмите, чтобы переводить субтитры") };
         if big_action(ui, title, sub, &hk.toggle_dialogue, dialogue_on, w) {
             shared.send(Command::ToggleDialogue);
+            if !dialogue_on {
+                to_tray(shared); // turned on: get out of the way of the game
+            }
         }
         if big_action(ui, "Перевести экран", "Меню, задания, предметы — по нажатию", &hk.screen_translate, has_interface, w) {
             // ScreenTranslate hides the panel itself and waits until it is off the screen.
@@ -519,6 +529,7 @@ fn page_home(ui: &mut Ui, shared: &Arc<Shared>) -> bool {
         let sub = if show_original { "Сейчас показан оригинал" } else { "Сейчас показан перевод" };
         if big_action(ui, "Оригинал / перевод", sub, &hk.show_original, show_original, w) {
             shared.send(Command::ToggleOriginal);
+            to_tray(shared);
         }
         if big_action(ui, "Область субтитров", "Необязательно: следить только за полосой субтитров", &hk.select_region, false, w) {
             shared.send(Command::SelectRegion);
