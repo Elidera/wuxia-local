@@ -31,6 +31,8 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let mut fail_count = 0u32;
     let mut auto = crate::auto::AutoState::default();
     let mut last_auto = Instant::now();
+    let mut last_excl_check = Instant::now();
+    let mut excl_warned = false;
 
     loop {
         tokio::time::sleep(Duration::from_millis(cfg.dialogue.interval_ms.clamp(50, 2000))).await;
@@ -69,6 +71,19 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 auto.clear(&shared);
                 continue;
             }
+        }
+        if last_excl_check.elapsed() > Duration::from_secs(3) {
+            last_excl_check = Instant::now();
+            let excl = win::exclusive_fullscreen();
+            if excl && !excl_warned {
+                shared.ui(|u| {
+                    u.notice(
+                        "Игра в эксклюзивном полноэкранном режиме: поверх неё Windows не показывает ничего. \
+                         В настройках графики игры выберите «Оконный без рамки» (Borderless / Windowed Fullscreen).",
+                    )
+                });
+            }
+            excl_warned = excl;
         }
 
         if auto_mode {

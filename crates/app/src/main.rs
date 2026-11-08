@@ -27,6 +27,8 @@ mod mascot;
 #[cfg(windows)]
 mod ocr;
 #[cfg(windows)]
+mod overlay;
+#[cfg(windows)]
 mod paths;
 #[cfg(windows)]
 mod state;
@@ -186,6 +188,7 @@ mod app {
             u.panel_open = true;
             u.focus_panel = true;
         });
+        crate::overlay::spawn(shared.clone());
         crate::tray::spawn(cmd_tx.clone());
         {
             let tx = cmd_tx.clone();
@@ -204,8 +207,9 @@ mod app {
                 .with_taskbar(false)
                 .with_resizable(false)
                 .with_position([0.0, 0.0])
-                // Starts as a 1×1 window; ui.rs expands it to full screen once it renders
-                // transparently, so the screen never flashes black.
+                // The root egui window only hosts the panel and the region picker:
+                // it stays a transparent 1×1 px window. Translations are drawn by
+                // the native overlay window (overlay.rs).
                 .with_inner_size([1.0, 1.0])
                 .with_icon(crate::mascot::icon_data()),
             renderer: eframe::Renderer::Glow,

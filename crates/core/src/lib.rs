@@ -13,6 +13,7 @@ pub mod image;
 pub mod lang;
 pub mod layout;
 pub mod prompt;
+pub mod raster;
 pub mod similarity;
 pub mod text;
 pub mod tsv;

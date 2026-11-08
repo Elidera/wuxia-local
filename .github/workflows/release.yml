@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # delete old build artifacts
 
 jobs:
   core-tests:
@@ -103,6 +104,13 @@ jobs:
           path: |
             installer/Output/*.exe
             WuxiaLocal-portable-x64.zip
+
+      - name: Keep only the 5 newest builds
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $ids = gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100&name=wuxia-local-windows" --jq '.artifacts | sort_by(.created_at) | reverse | .[5:] | .[].id'
+          foreach ($id in $ids) { if ($id) { gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id"; Write-Host "deleted artifact $id" } }
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')

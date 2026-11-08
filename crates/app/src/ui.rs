@@ -1,38 +1,35 @@
 //! egui front-end.
 //!
-//! The *root* viewport is the overlay: a transparent, borderless, always-on-top,
-//! click-through window covering the primary screen and excluded from capture.
-//! The control panel is a normal window opened on demand (F10 by default).
+//! The *root* viewport is a hidden 1×1 px transparent window that only hosts
+//! the control panel (F10) and the region picker. Translations over the game are
+//! drawn by the native layered window in `overlay.rs`.
 
 use crate::config::Config;
-use crate::state::{Command, InterfaceView, Shared};
+use crate::state::{Command, Shared};
 use crate::win;
 use eframe::egui::{
-    self, text::LayoutJob, Color32, FontData, FontDefinitions, FontFamily, FontId, Id, LayerId, Order, Pos2, Rect,
-    Rounding, Stroke, TextFormat, Vec2, ViewportBuilder, ViewportCommand, ViewportId,
+    self, Color32, FontData, FontDefinitions, FontFamily, FontId, Pos2, Rect, Rounding, Stroke, Vec2, ViewportBuilder,
+    ViewportCommand, ViewportId,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub const OVERLAY_TITLE: &str = "Wuxia Local Overlay";
+/// Title of the hidden 1×1 root window (the overlay itself is `overlay::TITLE`).
+pub const OVERLAY_TITLE: &str = "Wuxia Local Host";
 pub const PANEL_TITLE: &str = "Wuxia Local — панель";
 
 pub struct WuxiaApp {
     shared: Arc<Shared>,
     overlay_hwnd: Option<isize>,
     panel_hwnd: Option<isize>,
-    /// Capture visibility currently applied to (overlay, panel).
-    applied_visibility: (Option<bool>, Option<bool>),
-    /// Frames rendered while hidden; the overlay is shown only once it is transparent.
-    frames: u32,
+    /// Capture visibility currently applied to the panel.
+    applied_visibility: Option<bool>,
     focus_frames: u32,
-    exclude_attempts: u32,
     region_tex: Option<egui::TextureHandle>,
     ocr_tex: Option<(u64, egui::TextureHandle)>,
     drag_start: Option<Pos2>,
     panel_state: crate::ui_panel::PanelState,
     cfg_dirty_since: Option<Instant>,
-    sized: bool,
 }
 
 pub fn install_fonts(ctx: &egui::Context) {
@@ -77,36 +74,15 @@ impl WuxiaApp {
             shared,
             overlay_hwnd: None,
             panel_hwnd: None,
-            applied_visibility: (None, None),
-            frames: 0,
+            applied_visibility: None,
             focus_frames: 0,
-            exclude_attempts: 0,
             region_tex: None,
             ocr_tex: None,
             drag_start: None,
             panel_state: crate::ui_panel::PanelState::default(),
             cfg_dirty_since: None,
-            sized: false,
         }
     }
-
-    fn region_rect(ctx: &egui::Context, cfg: &Config) -> Rect {
-        let (sw, sh) = win::screen_size();
-        let r = cfg.dialogue.region;
-        let k = 1.0 / ctx.pixels_per_point();
-        Rect::from_min_size(
-            Pos2::new(r[0] * sw as f32 * k, r[1] * sh as f32 * k),
-            Vec2::new(r[2] * sw as f32 * k, r[3] * sh as f32 * k),
-        )
-    }
-}
-
-fn shadowed_text(painter: &egui::Painter, pos: Pos2, galley: Arc<egui::Galley>, color: Color32) {
-    let sh = Color32::from_black_alpha(200);
-    for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5), (1.5, 1.5)] {
-        painter.galley_with_override_text_color(pos + Vec2::new(dx, dy), galley.clone(), sh);
-    }
-    painter.galley(pos, galley, color);
 }
 
 impl eframe::App for WuxiaApp {
@@ -121,119 +97,17 @@ impl eframe::App for WuxiaApp {
                 win::make_tool_window(h);
             }
         }
-        // The window starts at 1×1 px: a freshly created GL window is black until the
-        // compositor picks up transparency. Expand to full screen after a few clear frames.
-        if !self.sized {
-            self.frames += 1;
-            if self.frames >= 4 && self.overlay_hwnd.is_some() {
-                let (sw, sh) = win::screen_size();
-                let ppp = ctx.pixels_per_point();
-                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::ZERO));
-                ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(sw as f32 / ppp, sh as f32 / ppp)));
-                self.sized = true;
-            }
-            ctx.request_repaint_after(Duration::from_millis(50));
-        }
-
+        // Translations are drawn by the native overlay window (overlay.rs);
+        // this 1×1 root window only hosts the panel and the region picker.
         let cfg = self.shared.cfg();
-        let want_visible = cfg.general.visible_in_screenshots;
-        if let Some(h) = self.overlay_hwnd {
-            // Wait until the window is full-size; retry a few times (the call can fail
-            // while the window is still being set up).
-            if self.sized && self.applied_visibility.0 != Some(want_visible) {
-                match win::set_capture_visible(h, want_visible) {
-                    Ok(()) => {
-                        tracing::info!("оверлей: видимость на скриншотах = {want_visible}");
-                        self.applied_visibility.0 = Some(want_visible);
-                        self.exclude_attempts = 0;
-                    }
-                    Err(e) => {
-                        self.exclude_attempts += 1;
-                        if self.exclude_attempts >= 20 {
-                            // Harmless: our BitBlt capture never sees the layered overlay anyway.
-                            tracing::warn!("оверлей: не удалось изменить видимость для захвата: {e}");
-                            self.applied_visibility.0 = Some(want_visible);
-                        } else {
-                            ctx.request_repaint_after(Duration::from_millis(250));
-                        }
-                    }
-                }
-            }
-        }
-        let test_until = self.shared.ui.lock().unwrap().test_overlay_until;
-        let (dialogue, auto_lines, interface, show_original, selecting, panel_open, server, paused, dialogue_on) = {
+        let (selecting, panel_open) = {
             let u = self.shared.ui.lock().unwrap();
-            (
-                u.dialogue.clone(),
-                u.auto_lines.clone(),
-                u.interface.clone(),
-                u.show_original,
-                u.selecting_region,
-                u.panel_open,
-                u.server.clone(),
-                u.paused_unfocused,
-                u.dialogue_on,
-            )
+            (u.selecting_region, u.panel_open)
         };
-
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("wuxia_overlay")));
-        let screen = ctx.screen_rect();
-
-        let _ = screen;
-        let mut painted: Vec<Rect> = Vec::new();
         if selecting {
             self.region_window(ctx, &cfg);
         } else {
             self.region_tex = None;
-            if let Some(view) = &interface {
-                painted.extend(draw_interface(ctx, &painter, view, &cfg, show_original));
-            }
-            if interface.is_none() {
-                if cfg.dialogue.mode == "auto" {
-                    painted.extend(draw_auto(ctx, &painter, &auto_lines, &cfg, show_original));
-                } else if let Some(d) = &dialogue {
-                    painted.extend(draw_dialogue(ctx, &painter, d, &cfg, show_original));
-                }
-            }
-            // Tiny status badge while the model is not ready.
-            if dialogue_on && !paused {
-                if let Some(s) = server.as_ref().filter(|s| !s.is_ready()) {
-                    let g = ctx.fonts(|f| {
-                        f.layout_no_wrap(format!("Wuxia Local: {}", s.label()), FontId::proportional(14.0), Color32::from_rgb(255, 225, 160))
-                    });
-                    let r = Rect::from_min_size(Pos2::new(12.0, 12.0), g.size() + Vec2::splat(12.0));
-                    painter.rect_filled(r, Rounding::same(6.0), Color32::from_black_alpha(170));
-                    painter.galley(r.min + Vec2::splat(6.0), g, Color32::WHITE);
-                    painted.push(r);
-                }
-            }
-        }
-        if let Some(t) = test_until {
-            let left = t.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                self.shared.ui.lock().unwrap().test_overlay_until = None;
-            } else {
-                let g = ctx.fonts(|f| {
-                    f.layout_no_wrap(
-                        format!("Wuxia Local: надпись поверх игры видна ✓  ({} с)", left.as_secs() + 1),
-                        FontId::proportional(30.0),
-                        Color32::from_rgb(255, 225, 160),
-                    )
-                });
-                let r = Rect::from_center_size(ctx.screen_rect().center(), g.size() + Vec2::new(40.0, 28.0));
-                painter.rect_filled(r, Rounding::same(10.0), Color32::from_black_alpha(220));
-                painter.galley(r.min + Vec2::new(20.0, 14.0), g, Color32::WHITE);
-                painted.push(r);
-                ctx.request_repaint_after(Duration::from_millis(200));
-            }
-        }
-        {
-            let ppp = ctx.pixels_per_point();
-            let px: Vec<[i32; 4]> = painted
-                .iter()
-                .map(|r| [(r.left() * ppp) as i32, (r.top() * ppp) as i32, (r.width() * ppp).ceil() as i32, (r.height() * ppp).ceil() as i32])
-                .collect();
-            *self.shared.overlay_px.lock().unwrap() = px;
         }
 
         if panel_open {
@@ -266,152 +140,6 @@ impl eframe::App for WuxiaApp {
             }
         }
     }
-}
-
-fn draw_dialogue(ctx: &egui::Context, painter: &egui::Painter, d: &crate::state::DialogueView, cfg: &Config, show_original: bool) -> Option<Rect> {
-    let region = WuxiaApp::region_rect(ctx, cfg);
-    draw_plate(ctx, painter, d, region, cfg.dialogue.font_size, cfg.dialogue.position.as_str(), cfg, show_original)
-}
-
-/// «Авто» mode: one plate per text found on screen, placed relative to it.
-fn draw_auto(ctx: &egui::Context, painter: &egui::Painter, lines: &[crate::state::AutoLine], cfg: &Config, show_original: bool) -> Vec<Rect> {
-    let ppp = ctx.pixels_per_point();
-    let mut out = Vec::new();
-    for l in lines {
-        if !l.pending && l.translation.is_empty() {
-            continue;
-        }
-        let anchor = Rect::from_min_size(Pos2::new(l.rect.x / ppp, l.rect.y / ppp), Vec2::new(l.rect.w / ppp, l.rect.h / ppp));
-        let d = crate::state::DialogueView {
-            source: l.source.clone(),
-            speaker: l.speaker.clone(),
-            translation: l.translation.clone(),
-            pending: l.pending,
-            error: None,
-            from_cache: false,
-        };
-        // Below the text unless that runs off the screen.
-        let mut pos = cfg.dialogue.position.as_str();
-        if pos == "below" && anchor.bottom() + 60.0 > ctx.screen_rect().bottom() {
-            pos = "above";
-        }
-        out.extend(draw_plate(ctx, painter, &d, anchor, cfg.dialogue.font_size * 0.85, pos, cfg, show_original));
-    }
-    out
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_plate(
-    ctx: &egui::Context,
-    painter: &egui::Painter,
-    d: &crate::state::DialogueView,
-    region: Rect,
-    size: f32,
-    position: &str,
-    cfg: &Config,
-    show_original: bool,
-) -> Option<Rect> {
-    let body = if show_original {
-        d.source.clone()
-    } else if !d.translation.is_empty() {
-        d.translation.clone()
-    } else if d.pending {
-        "…".into()
-    } else if let Some(e) = &d.error {
-        format!("{}  [ошибка: {}]", d.source, e.chars().take(60).collect::<String>())
-    } else {
-        return None;
-    };
-    let wrap = (region.width() * 1.1).max(300.0);
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = wrap;
-    job.halign = egui::Align::Center;
-    if let (Some(sp), false) = (&d.speaker, show_original) {
-        job.append(
-            &format!("{sp}: "),
-            0.0,
-            TextFormat { font_id: FontId::new(size, FontFamily::Name("bold".into())), color: Color32::from_rgb(240, 200, 120), ..Default::default() },
-        );
-    }
-    let color = if d.pending && !show_original { Color32::from_rgb(225, 225, 225) } else { Color32::from_rgb(250, 246, 235) };
-    job.append(&body, 0.0, TextFormat { font_id: FontId::proportional(size), color, ..Default::default() });
-    let galley = ctx.fonts(|f| f.layout_job(job));
-    let gsize = galley.size();
-    let pad = Vec2::new(14.0, 8.0);
-    let plate_w = gsize.x + pad.x * 2.0;
-    let plate_h = gsize.y + pad.y * 2.0;
-    let cx = region.center().x;
-    let top = match position {
-        "above" => region.top() - plate_h - 6.0,
-        "over" => region.center().y - plate_h / 2.0,
-        _ => region.bottom() + 6.0,
-    };
-    let screen = ctx.screen_rect();
-    let top = top.clamp(0.0, (screen.bottom() - plate_h).max(0.0));
-    let left = (cx - plate_w / 2.0).clamp(0.0, (screen.right() - plate_w).max(0.0));
-    let plate = Rect::from_min_size(Pos2::new(left, top), Vec2::new(plate_w, plate_h));
-    let alpha = if position == "over" { 0.92f32.max(cfg.dialogue.backdrop_opacity) } else { cfg.dialogue.backdrop_opacity };
-    painter.rect_filled(plate, Rounding::same(8.0), Color32::from_black_alpha((alpha.clamp(0.0, 1.0) * 255.0) as u8));
-    // The galley is centre-aligned around x=0 when halign=Center.
-    let pos = Pos2::new(plate.center().x - gsize.x / 2.0 - galley.rect.min.x, plate.top() + pad.y);
-    shadowed_text(painter, pos, galley, Color32::WHITE);
-    Some(plate)
-}
-
-fn draw_interface(ctx: &egui::Context, painter: &egui::Painter, view: &InterfaceView, cfg: &Config, show_original: bool) -> Vec<Rect> {
-    let ppp = ctx.pixels_per_point();
-    let mode = cfg.interface.mode.as_str();
-    let mut painted = Vec::new();
-    if show_original {
-        return painted;
-    }
-    if mode == "list" {
-        let mut job = LayoutJob::default();
-        job.wrap.max_width = 420.0;
-        for it in &view.items {
-            let dst = it.dst.as_deref().unwrap_or("…");
-            job.append(&format!("{}  ", it.src), 0.0, TextFormat { font_id: FontId::proportional(13.0), color: Color32::from_gray(170), ..Default::default() });
-            job.append(&format!("{dst}\n"), 0.0, TextFormat { font_id: FontId::proportional(16.0), color: Color32::WHITE, ..Default::default() });
-        }
-        let g = ctx.fonts(|f| f.layout_job(job));
-        let screen = ctx.screen_rect();
-        let r = Rect::from_min_size(Pos2::new(screen.right() - g.size().x - 36.0, 60.0), g.size() + Vec2::splat(24.0));
-        painter.rect_filled(r, Rounding::same(8.0), Color32::from_black_alpha(215));
-        painter.galley(r.min + Vec2::splat(12.0), g, Color32::WHITE);
-        painted.push(r);
-    } else {
-        for it in &view.items {
-            let Some(dst) = &it.dst else { continue };
-            let r = Rect::from_min_size(Pos2::new(it.rect.x / ppp, it.rect.y / ppp), Vec2::new(it.rect.w / ppp, it.rect.h / ppp));
-            let mut size = (r.height() * cfg.interface.font_scale).clamp(9.0, 64.0);
-            let mut g = ctx.fonts(|f| f.layout_no_wrap(dst.clone(), FontId::proportional(size), Color32::WHITE));
-            // Russian is longer: shrink to fit up to 55 %, then allow overflow.
-            let max_w = r.width() * 1.15 + 8.0;
-            if g.size().x > max_w {
-                size = (size * max_w / g.size().x).max(size * 0.55);
-                g = ctx.fonts(|f| f.layout_no_wrap(dst.clone(), FontId::proportional(size), Color32::WHITE));
-            }
-            let cover = Rect::from_min_size(r.min - Vec2::splat(2.0), Vec2::new(r.width().max(g.size().x) + 4.0, r.height() + 4.0));
-            let (fill, fg) = if it.busy || mode == "backdrop" {
-                (Color32::from_rgba_unmultiplied(12, 12, 14, 230), Color32::from_rgb(245, 240, 225))
-            } else {
-                (Color32::from_rgb(it.bg[0], it.bg[1], it.bg[2]), Color32::from_rgb(it.fg[0], it.fg[1], it.fg[2]))
-            };
-            painter.rect_filled(cover, Rounding::same(if it.busy || mode == "backdrop" { 4.0 } else { 1.0 }), fill);
-            painted.push(cover);
-            let pos = Pos2::new(r.left(), r.center().y - g.size().y / 2.0);
-            painter.galley(pos, g, fg);
-        }
-    }
-    if view.pending > 0 {
-        let g = ctx.fonts(|f| f.layout_no_wrap(format!("Перевод экрана… осталось {}", view.pending), FontId::proportional(14.0), Color32::WHITE));
-        let screen = ctx.screen_rect();
-        let r = Rect::from_min_size(Pos2::new(screen.right() - g.size().x - 24.0, 12.0), g.size() + Vec2::splat(12.0));
-        painter.rect_filled(r, Rounding::same(6.0), Color32::from_black_alpha(180));
-        painter.galley(r.min + Vec2::splat(6.0), g, Color32::WHITE);
-        painted.push(r);
-    }
-    painted
 }
 
 impl WuxiaApp {
@@ -558,16 +286,16 @@ impl WuxiaApp {
         }
         if let Some(h) = self.panel_hwnd {
             let want = self.shared.cfg().general.visible_in_screenshots;
-            if self.applied_visibility.1 != Some(want) {
+            if self.applied_visibility != Some(want) {
                 if let Err(e) = win::set_capture_visible(h, want) {
                     tracing::warn!("панель: видимость на скриншотах: {e}");
                 }
-                self.applied_visibility.1 = Some(want);
+                self.applied_visibility = Some(want);
             }
         }
         if !self.shared.ui.lock().unwrap().panel_open {
             self.panel_hwnd = None;
-            self.applied_visibility.1 = None;
+            self.applied_visibility = None;
         }
         if dirty {
             self.cfg_dirty_since = Some(Instant::now());

@@ -15,7 +15,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
     SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow, SW_RESTORE,
     SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST,
 };
+use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
 
 /// Make the process per-monitor DPI aware so all coordinates are physical pixels.
 /// Must be called before any window is created.
@@ -132,10 +134,47 @@ pub fn game_in_foreground(window_match: &str, class_hint: &str) -> bool {
     let key = format!("{title_raw}\u{1}{class}");
     let mut last = LAST.lock().unwrap();
     if *last != key {
-        tracing::info!("активное окно: «{title_raw}» [{class}] → {}", if result { "игра" } else { "не игра" });
+        let (topmost, full) = foreground_geometry();
+        tracing::info!(
+            "активное окно: «{title_raw}» [{class}] → {} (поверх всех: {}, на весь экран: {}, эксклюзивный полноэкранный: {})",
+            if result { "игра" } else { "не игра" },
+            yes_no(topmost),
+            yes_no(full),
+            yes_no(exclusive_fullscreen())
+        );
         *last = key;
     }
     result
+}
+
+fn yes_no(b: bool) -> &'static str {
+    if b {
+        "да"
+    } else {
+        "нет"
+    }
+}
+
+/// Is the foreground window "always on top", and does it cover the whole primary screen?
+fn foreground_geometry() -> (bool, bool) {
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.0.is_null() {
+            return (false, false);
+        }
+        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        let topmost = ex & WS_EX_TOPMOST.0 as isize != 0;
+        let (sw, sh) = screen_size();
+        let mut r = RECT::default();
+        let full = GetWindowRect(h, &mut r).is_ok() && r.left <= 0 && r.top <= 0 && r.right >= sw && r.bottom >= sh;
+        (topmost, full)
+    }
+}
+
+/// A Direct3D game in *exclusive* fullscreen: Windows shows nothing over it,
+/// no overlay can work — the game must run in borderless / windowed fullscreen.
+pub fn exclusive_fullscreen() -> bool {
+    unsafe { matches!(SHQueryUserNotificationState(), Ok(s) if s == QUNS_RUNNING_D3D_FULL_SCREEN) }
 }
 
 const INSTANCE_MUTEX: &str = "Local\\WuxiaLocal.SingleInstance";
