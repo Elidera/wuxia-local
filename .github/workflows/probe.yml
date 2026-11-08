@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Probe
-        shell: pwsh
+        shell: powershell
         run: |
           ./tools/probe/capture-probe.ps1 | Tee-Object probe.txt
           "## ${{ matrix.os }}`n``````n$(Get-Content probe.txt -Raw)`n``````" >> $env:GITHUB_STEP_SUMMARY

@@ -95,6 +95,12 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
     if u.selecting_region || u.freeze.is_some() {
         return out; // the region picker / freeze frame is its own window
     }
+    if u.paused_unfocused && !u.edit_box {
+        // The game is not in front (Alt+Tab, another window): no translations
+        // over other programs. The panel's test caption is still shown.
+        push_test_badge(u, &mut out);
+        return out;
+    }
     let show_original = u.show_original;
     let opacity = cfg.dialogue.backdrop_opacity;
     let b = cfg.dialogue.box_rect;
@@ -190,6 +196,11 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
             out.push(El::Badge { text: format!("Wuxia Local: {}", s.label()), corner: Corner::TopLeft, size_pt: 14.0 });
         }
     }
+    push_test_badge(u, &mut out);
+    out
+}
+
+fn push_test_badge(u: &UiState, out: &mut Vec<El>) {
     if let Some(t) = u.test_overlay_until {
         let left = t.saturating_duration_since(Instant::now());
         if !left.is_zero() {
@@ -200,7 +211,6 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
             });
         }
     }
-    out
 }
 
 // ---------------------------------------------------------------- layout

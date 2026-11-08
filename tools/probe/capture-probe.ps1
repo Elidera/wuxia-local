@@ -2,9 +2,8 @@
 # (SetWindowDisplayAffinity WDA_EXCLUDEFROMCAPTURE), and does BitBlt then
 # really not see them? Run on Windows 10 and 11 runners (probe.yml).
 $ErrorActionPreference = "Stop"
-Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+Add-Type -TypeDefinition @'
 using System;
-using System.Drawing;
 using System.Runtime.InteropServices;
 
 public static class Probe {
@@ -36,6 +35,12 @@ public static class Probe {
     [DllImport("gdi32")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
     [DllImport("gdi32")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BMI b, uint u, out IntPtr bits, IntPtr s, uint o);
     [DllImport("kernel32")] static extern IntPtr GetModuleHandleW(IntPtr n);
+    [DllImport("kernel32")] static extern void Sleep(uint ms);
+    [DllImport("gdi32")] static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int w, int h);
+    [DllImport("gdi32")] static extern bool BitBlt(IntPtr d, int x, int y, int w, int h, IntPtr s, int sx, int sy, uint op);
+    [DllImport("gdi32")] static extern uint GetPixel(IntPtr dc, int x, int y);
+    [DllImport("gdi32")] static extern bool DeleteObject(IntPtr o);
+    [DllImport("gdi32")] static extern bool DeleteDC(IntPtr dc);
 
     static WndProc proc = (h, m, w, l) => DefWindowProcW(h, m, w, l);
     const uint RED = 0x0000FF; // COLORREF 0x00BBGGRR
@@ -47,17 +52,24 @@ public static class Probe {
         while (DateTime.Now < end) {
             MSG m;
             while (PeekMessageW(out m, IntPtr.Zero, 0, 0, 1)) { TranslateMessage(ref m); DispatchMessageW(ref m); }
-            System.Threading.Thread.Sleep(10);
+            Sleep(10);
         }
     }
 
+    // The same way the app captures: BitBlt from the screen DC, no CAPTUREBLT.
     static bool Red(int x, int y) {
-        using (var bmp = new Bitmap(1, 1))
-        using (var g = Graphics.FromImage(bmp)) {
-            g.CopyFromScreen(x, y, 0, 0, new Size(1, 1));
-            var c = bmp.GetPixel(0, 0);
-            return c.R > 200 && c.G < 60 && c.B < 60;
-        }
+        var scr = GetDC(IntPtr.Zero);
+        var dc = CreateCompatibleDC(scr);
+        var bmp = CreateCompatibleBitmap(scr, 1, 1);
+        var old = SelectObject(dc, bmp);
+        BitBlt(dc, 0, 0, 1, 1, scr, x, y, 0x00CC0020);
+        uint c = GetPixel(dc, 0, 0);
+        SelectObject(dc, old);
+        DeleteObject(bmp);
+        DeleteDC(dc);
+        ReleaseDC(IntPtr.Zero, scr);
+        uint r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
+        return r > 200 && g < 60 && b < 60;
     }
 
     static void Ulw(IntPtr h, int x, int y, int w, int hh) {
