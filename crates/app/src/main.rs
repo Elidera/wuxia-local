@@ -261,16 +261,14 @@ mod app {
                         tokio::spawn(async move {
                             // The panel would be photographed and "translated" too: hide it
                             // first and give Windows time to take it off the screen.
-                            // Pressed in the panel: the panel goes to the tray either way.
-                            let was_open = sh.ui.lock().unwrap().panel_open;
-                            if was_open {
-                                sh.ui(|u| u.panel_open = false);
-                                sh.send(Command::PanelClosedToTray);
-                                if sh.ui.lock().unwrap().interface.is_none() {
-                                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                                }
+                            // Pressed in the panel: hide it only for the screenshot (it would be
+                            // "translated" too) and bring it back afterwards.
+                            let starting = sh.ui.lock().unwrap().interface.is_none();
+                            if starting && sh.ui(|u| u.hide_panel_for_shot()) {
+                                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
                             }
-                            interface::toggle(sh, tr, o).await;
+                            interface::toggle(sh.clone(), tr, o).await;
+                            sh.ui(|u| u.restore_panel());
                         });
                     }
                     None => shared.ui(|u| u.notice("OCR не готов — перевод экрана недоступен")),
@@ -282,13 +280,14 @@ mod app {
                         shared.ui(|u| {
                             u.selecting_region = false;
                             u.region_shot = None;
+                            u.restore_panel();
                         });
                     } else {
                         // Hide our own windows, let them disappear, then take the screenshot.
                         shared.ui(|u| {
                             u.dialogue = None;
                             u.interface = None;
-                            u.panel_open = false;
+                            u.hide_panel_for_shot();
                         });
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         let (sw, sh) = win::screen_size();
@@ -304,6 +303,7 @@ mod app {
                 Command::CancelRegion => shared.ui(|u| {
                     u.selecting_region = false;
                     u.region_shot = None;
+                    u.restore_panel();
                 }),
                 Command::RegionSelected(r) => {
                     {
@@ -322,6 +322,7 @@ mod app {
                     shared.reset_watcher.store(true, Ordering::SeqCst);
                     shared.ui(|u| {
                         u.selecting_region = false;
+                        u.restore_panel();
                         u.region_shot = None;
                         if r[2] * r[3] < 0.5 {
                             u.notice("Область субтитров сохранена. Режим «только область»; вернуть «Авто: весь экран» можно в настройках.");
@@ -419,7 +420,10 @@ mod app {
                 Command::FreezeTranslate(i) => {
                     tokio::spawn(crate::extras::freeze_translate(shared.clone(), tr.clone(), i));
                 }
-                Command::FreezeClose => shared.ui(|u| u.freeze = None),
+                Command::FreezeClose => shared.ui(|u| {
+                    u.freeze = None;
+                    u.restore_panel();
+                }),
                 Command::AddTerm { src, dst } => crate::extras::add_term(&shared, &tr, &src, &dst),
                 Command::Diagnose => {
                     tokio::spawn(crate::extras::diagnose(shared.clone(), tr.clone(), ocr.clone()));

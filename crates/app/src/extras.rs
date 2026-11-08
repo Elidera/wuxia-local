@@ -69,11 +69,13 @@ pub async fn bad_translation(shared: Arc<Shared>, tr: Arc<Translator>) {
 /// a click on a text translates it (see ui.rs `freeze_window`). Again — close.
 pub async fn freeze(shared: Arc<Shared>, ocr: Ocr) {
     if shared.ui.lock().unwrap().freeze.is_some() {
-        shared.ui(|u| u.freeze = None);
+        shared.ui(|u| {
+            u.freeze = None;
+            u.restore_panel();
+        });
         return;
     }
-    let was_open = shared.ui.lock().unwrap().panel_open;
-    shared.ui(|u| u.panel_open = false);
+    let was_open = shared.ui(|u| u.hide_panel_for_shot());
     if was_open {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -82,7 +84,10 @@ pub async fn freeze(shared: Arc<Shared>, ocr: Ocr) {
     let frame = match capture::capture(PxRect { x: 0, y: 0, w: sw, h: sh }) {
         Ok(f) => f,
         Err(e) => {
-            shared.ui(|u| u.notice(format!("Стоп-кадр: {e}")));
+            shared.ui(|u| {
+                u.restore_panel();
+                u.notice(format!("Стоп-кадр: {e}"));
+            });
             return;
         }
     };

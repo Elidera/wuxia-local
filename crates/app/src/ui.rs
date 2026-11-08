@@ -418,9 +418,13 @@ impl WuxiaApp {
                 .with_active(true),
             |ctx, _class| {
                 protect_now = true;
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    // ✕ hides the panel; the program keeps running in the tray.
-                    shared.ui(|u| u.panel_open = false);
+                // ✕ or minimising hides the panel; the program keeps running in the tray.
+                let (close, minimized) = ctx.input(|i| (i.viewport().close_requested(), i.viewport().minimized == Some(true)));
+                if close || minimized {
+                    shared.ui(|u| {
+                        u.panel_open = false;
+                        u.panel_return = false;
+                    });
                     shared.send(Command::PanelClosedToTray);
                 }
                 dirty |= crate::ui_panel::panel_ui(ctx, &shared, st, ocr_view.as_ref());

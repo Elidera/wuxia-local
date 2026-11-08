@@ -204,6 +204,10 @@ pub struct UiState {
     pub freeze: Option<FreezeView>,
     /// Hotkeys that could not be registered (for the self-check).
     pub hotkey_problems: Vec<String>,
+    /// The panel was hidden only so it is not in a screenshot (F8, region,
+    /// freeze frame): it comes back when that action is over. Only ✕ or
+    /// minimising sends the panel to the tray.
+    pub panel_return: bool,
     pub panel_open: bool,
     /// Bring the panel to the front on the next frames (it can open behind the game).
     pub focus_panel: bool,
@@ -224,6 +228,26 @@ pub struct UiState {
     pub test_overlay_until: Option<std::time::Instant>,
     /// The translation window is being moved / resized with the mouse.
     pub edit_box: bool,
+}
+
+impl UiState {
+    /// Hide the panel for a screenshot; returns whether it was open.
+    pub fn hide_panel_for_shot(&mut self) -> bool {
+        let was = self.panel_open;
+        if was {
+            self.panel_open = false;
+            self.panel_return = true;
+        }
+        was
+    }
+
+    /// The screenshot action is over: show the panel again if it hid for it.
+    pub fn restore_panel(&mut self) {
+        if self.panel_return {
+            self.panel_return = false;
+            self.panel_open = true;
+        }
+    }
 }
 
 impl UiState {
