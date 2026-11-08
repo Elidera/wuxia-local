@@ -200,6 +200,7 @@ pub struct Hotkeys {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            fresh: false,
             general: General::default(),
             llm: Llm::default(),
             models: default_models(),

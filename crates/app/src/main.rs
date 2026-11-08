@@ -78,7 +78,7 @@ mod app {
     use crate::paths::Paths;
     use crate::state::{Command, Shared, UiState};
     use crate::translate::Translator;
-    use crate::{bench, capture, dialogue, hotkeys, interface, ui, win};
+    use crate::{bench, capture, dialogue, hotkeys, hw, interface, ui, win};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, RwLock};
     use tokio::sync::mpsc;

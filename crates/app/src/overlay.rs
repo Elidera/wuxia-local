@@ -22,7 +22,6 @@
 use crate::config::Config;
 use crate::state::{Command, Shared, UiState};
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::core::{HSTRING, PCWSTR};
