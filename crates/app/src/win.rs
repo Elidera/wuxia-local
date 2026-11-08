@@ -2,7 +2,7 @@
 //! Window handles are passed around as `isize` because `HWND` is `!Send`.
 
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, RECT};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE,
@@ -13,7 +13,7 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
+    EnumWindows, FindWindowW, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
     SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow, SW_RESTORE,
     SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST,
@@ -173,6 +173,55 @@ pub fn game_in_foreground(window_match: &str, class_hint: &str) -> bool {
         *last = key;
     }
     result
+}
+
+/// The game's window found among all windows (for the self-check, when the
+/// panel and not the game is in front).
+pub struct GameWindow {
+    pub title: String,
+    pub class: String,
+    /// x, y, w, h in screen pixels.
+    pub rect: (i32, i32, i32, i32),
+    pub topmost: bool,
+    pub minimized: bool,
+}
+
+pub fn find_game_window(window_match: &str, class_hint: &str) -> Option<GameWindow> {
+    unsafe extern "system" fn collect(h: HWND, lp: LPARAM) -> BOOL {
+        let v = &mut *(lp.0 as *mut Vec<HWND>);
+        if IsWindowVisible(h).as_bool() {
+            v.push(h);
+        }
+        BOOL(1)
+    }
+    let mut all: Vec<HWND> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut Vec<HWND> as isize));
+    }
+    let matches: Vec<String> = window_match.split('|').map(|m| m.trim().to_lowercase()).filter(|m| !m.is_empty()).collect();
+    for h in all {
+        let (title, class) = unsafe {
+            let mut t = [0u16; 512];
+            let n = GetWindowTextW(h, &mut t);
+            let mut c = [0u16; 256];
+            let k = GetClassNameW(h, &mut c);
+            (String::from_utf16_lossy(&t[..n.max(0) as usize]), String::from_utf16_lossy(&c[..k.max(0) as usize]))
+        };
+        if NOT_GAME_CLASSES.iter().any(|c| class.starts_with(c)) {
+            continue;
+        }
+        let low = title.to_lowercase();
+        if (!class_hint.is_empty() && class == class_hint) || matches.iter().any(|m| low.contains(m.as_str())) {
+            let mut r = RECT::default();
+            let (rect, topmost, minimized) = unsafe {
+                let _ = GetWindowRect(h, &mut r);
+                let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+                ((r.left, r.top, r.right - r.left, r.bottom - r.top), ex & WS_EX_TOPMOST.0 as isize != 0, IsIconic(h).as_bool())
+            };
+            return Some(GameWindow { title, class, rect, topmost, minimized });
+        }
+    }
+    None
 }
 
 fn yes_no(b: bool) -> &'static str {

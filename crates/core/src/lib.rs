@@ -4,6 +4,7 @@
 //! unit-tested anywhere. The Windows application (`wuxia-app`) wires these
 //! pieces to screen capture, OCR, llama-server and the overlay.
 
+pub mod bundle;
 pub mod cache;
 pub mod detect;
 pub mod fixes;

@@ -132,6 +132,12 @@ pub struct Dialogue {
     /// The user's translation window as fractions of the primary screen: [x, y, w, h].
     pub box_rect: [f32; 4],
     pub font_size: f32,
+    /// Look of the translation over the game: font (any installed Windows
+    /// font), text and speaker-name colours, dark outline around letters.
+    pub overlay_font: String,
+    pub overlay_color: [u8; 3],
+    pub overlay_name_color: [u8; 3],
+    pub overlay_outline: bool,
     pub backdrop_opacity: f32,
     pub stable_frames: u32,
     pub clear_frames: u32,
@@ -175,6 +181,10 @@ pub struct Hotkeys {
     pub panel: String,
     /// Save the screen as a test case for the developer.
     pub save_case: String,
+    /// Freeze frame: still picture, click a text to translate it.
+    pub freeze: String,
+    /// The last translation is bad: forget it and translate again.
+    pub bad_translation: String,
 }
 
 impl Default for Config {
@@ -311,6 +321,10 @@ impl Default for Dialogue {
             position: "below".into(),
             box_rect: [0.2, 0.74, 0.6, 0.13],
             font_size: 26.0,
+            overlay_font: "Segoe UI".into(),
+            overlay_color: [250, 246, 235],
+            overlay_name_color: [240, 200, 120],
+            overlay_outline: true,
             backdrop_opacity: 0.72,
             stable_frames: 2,
             clear_frames: 4,
@@ -343,6 +357,8 @@ impl Default for Hotkeys {
             select_region: "Ctrl+F7".into(),
             panel: "F10".into(),
             save_case: "Ctrl+F9".into(),
+            freeze: "Ctrl+F8".into(),
+            bad_translation: "Ctrl+F11".into(),
         }
     }
 }

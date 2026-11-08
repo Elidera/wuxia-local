@@ -223,6 +223,67 @@ impl Translator {
         self.history.lock().unwrap().clear();
     }
 
+    /// The user marked this dialogue translation bad: forget it (cache and the
+    /// similar-line memory) so the next request asks the model again, and note
+    /// it in `bad.tsv` (to look through or send to the developer).
+    pub fn forget(&self, model_id: &str, src: &str, bad: &str) {
+        let line = self.cache.lock().unwrap().remove(&[model_id, kind_tag(TextKind::Dialogue), src]);
+        append(&self.paths.cache(), &line);
+        self.fuzzy.lock().unwrap().forget(src);
+        let (date, time) = crate::win::local_date_time();
+        append(&self.paths.data.join("bad.tsv"), &wuxia_core::tsv::line(&[src, bad, &format!("{date} {time}")]));
+        tracing::info!("плохой перевод отмечен: {src} → {bad}");
+    }
+
+    /// The user's own dictionaries as one text for sharing (see wuxia_core::bundle).
+    pub fn export_bundle(&self) -> String {
+        let read = |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+        let parts = [
+            ("user.tsv", read(self.paths.user_glossary())),
+            ("fixes.tsv", read(self.paths.fixes())),
+            ("corrections.tsv", read(self.paths.corrections())),
+        ];
+        let refs: Vec<(&str, &str)> = parts.iter().map(|(n, c)| (*n, c.as_str())).collect();
+        wuxia_core::bundle::pack(&refs)
+    }
+
+    /// Merge a shared bundle into the user's files (no duplicates) and reload.
+    /// Returns a short report like «глоссарий +12, исправления +3».
+    pub fn import_bundle(&self, text: &str, profile: &str) -> Result<String> {
+        let parts = wuxia_core::bundle::unpack(text);
+        if parts.is_empty() {
+            return Err(anyhow!("это не файл словарей Wuxia Local"));
+        }
+        let mut report = Vec::new();
+        for (name, content) in parts {
+            let (path, title) = match name.as_str() {
+                "user.tsv" => (self.paths.user_glossary(), "глоссарий"),
+                "fixes.tsv" => (self.paths.fixes(), "исправления"),
+                "corrections.tsv" => (self.paths.corrections(), "мои переводы"),
+                other => {
+                    tracing::warn!("импорт словарей: неизвестный раздел «{other}» пропущен");
+                    continue;
+                }
+            };
+            let existing = std::fs::read_to_string(&path).unwrap_or_default();
+            let (merged, added) = wuxia_core::bundle::merge(&existing, &content);
+            if added > 0 {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&path, merged)?;
+            }
+            report.push(format!("{title} +{added}"));
+        }
+        self.reload_dictionaries(profile);
+        let mut corrections = Store::new();
+        if let Ok(s) = std::fs::read_to_string(self.paths.corrections()) {
+            corrections.load_tsv(&s);
+        }
+        *self.corrections.lock().unwrap() = corrections;
+        Ok(report.join(", "))
+    }
+
     pub fn save_correction(&self, src: &str, dst: &str) {
         let line = {
             let mut c = self.corrections.lock().unwrap();

@@ -30,6 +30,27 @@ impl ServerStatus {
     }
 }
 
+/// A still picture of the screen with the texts found on it.
+#[derive(Debug, Clone)]
+pub struct FreezeView {
+    pub shot: std::sync::Arc<wuxia_core::image::Frame>,
+    pub lines: Vec<FreezeLine>,
+    pub selected: Option<usize>,
+    /// Text recognition still running.
+    pub busy: bool,
+    /// Changes when the picture changes (texture reload in the UI).
+    pub id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FreezeLine {
+    /// Screen pixels.
+    pub rect: Rect,
+    pub src: String,
+    pub dst: Option<String>,
+    pub pending: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     ToggleDialogue,
@@ -57,6 +78,19 @@ pub enum Command {
     EditBox,
     /// Save the screen as a new screenshot test case (Ctrl+F9).
     SaveCase,
+    /// Dictionaries for sharing: write the bundle to this file / merge one in.
+    ExportDicts(std::path::PathBuf),
+    ImportDicts(std::path::PathBuf),
+    /// The last dialogue translation is bad: forget it and translate again (Ctrl+F11).
+    BadTranslation,
+    /// Freeze frame (Ctrl+F8): a still picture of the screen, click a text to translate it.
+    Freeze,
+    FreezeTranslate(usize),
+    FreezeClose,
+    /// Add a pair to the user's glossary (from the freeze frame).
+    AddTerm { src: String, dst: String },
+    /// Self-check: OCR, model, game window, overlay, capture, hotkeys → report file.
+    Diagnose,
     /// Open a web page in the default browser.
     OpenUrl(String),
     /// The panel was closed with ✕: explain once where the program went.
@@ -166,6 +200,10 @@ pub struct UiState {
     pub selecting_region: bool,
     /// Screenshot shown in the region picker.
     pub region_shot: Option<std::sync::Arc<wuxia_core::image::Frame>>,
+    /// Freeze frame being shown (Ctrl+F8).
+    pub freeze: Option<FreezeView>,
+    /// Hotkeys that could not be registered (for the self-check).
+    pub hotkey_problems: Vec<String>,
     pub panel_open: bool,
     /// Bring the panel to the front on the next frames (it can open behind the game).
     pub focus_panel: bool,

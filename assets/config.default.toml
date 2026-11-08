@@ -118,6 +118,11 @@ context_lines = 3
 show_original = false
 position = "below"
 font_size = 26.0
+# Вид перевода поверх игры: шрифт Windows, цвета текста и имени (R, G, B), обводка букв
+overlay_font = "Segoe UI"
+overlay_color = [250, 246, 235]
+overlay_name_color = [240, 200, 120]
+overlay_outline = true
 backdrop_opacity = 0.72
 stable_frames = 2
 clear_frames = 4
@@ -147,3 +152,7 @@ select_region = "Ctrl+F7"
 panel = "F10"
 # Сохранить экран как случай для проверки (папка cases в данных программы)
 save_case = "Ctrl+F9"
+# Стоп-кадр: снимок экрана, клик по тексту — перевод
+freeze = "Ctrl+F8"
+# Последний перевод плохой: забыть и перевести заново
+bad_translation = "Ctrl+F11"

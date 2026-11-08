@@ -670,6 +670,18 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
             });
         }
         dirty |= setting_row(ui, "Размер шрифта", "", |ui| ui.add(egui::Slider::new(&mut d.font_size, 14.0..=56.0).suffix(" пт")).changed());
+        dirty |= setting_row(ui, "Шрифт перевода", "Любой шрифт Windows", |ui| {
+            let mut changed = false;
+            egui::ComboBox::from_id_source("overlay_font").selected_text(d.overlay_font.clone()).show_ui(ui, |ui| {
+                for f in ["Segoe UI", "Arial", "Tahoma", "Verdana", "Calibri", "Trebuchet MS", "Georgia", "Times New Roman", "Palatino Linotype", "Comic Sans MS"] {
+                    changed |= ui.selectable_value(&mut d.overlay_font, f.to_string(), f).changed();
+                }
+            });
+            changed
+        });
+        dirty |= setting_row(ui, "Цвет текста", "", |ui| ui.color_edit_button_srgb(&mut d.overlay_color).changed());
+        dirty |= setting_row(ui, "Цвет имени говорящего", "", |ui| ui.color_edit_button_srgb(&mut d.overlay_name_color).changed());
+        dirty |= setting_row(ui, "Обводка букв", "Тёмный контур — текст читается на любом фоне", |ui| toggle(ui, &mut d.overlay_outline).changed());
         dirty |= setting_row(ui, "Затемнение подложки", "0 — без подложки", |ui| {
             ui.add(egui::Slider::new(&mut d.backdrop_opacity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0} %", v * 100.0))).changed()
         });
@@ -730,8 +742,8 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
 
     let hk = c.hotkeys.clone();
     let keys = format!(
-        "горячие клавиши {} {} {} {} {} перевод диалогов экран оригинал область субтитров панель config.toml",
-        hk.toggle_dialogue, hk.screen_translate, hk.show_original, hk.select_region, hk.panel
+        "горячие клавиши {} {} {} {} {} {} {} {} перевод диалогов экран оригинал область субтитров панель стоп-кадр плохой перевод снимок config.toml",
+        hk.toggle_dialogue, hk.screen_translate, hk.show_original, hk.select_region, hk.panel, hk.freeze, hk.bad_translation, hk.save_case
     );
     any |= search_card(ui, "Горячие клавиши", &keys, |ui| {
         for (k, what) in [
@@ -740,6 +752,9 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
             (&hk.show_original, "Оригинал / перевод"),
             (&hk.select_region, "Выбрать область субтитров"),
             (&hk.panel, "Открыть / закрыть эту панель"),
+            (&hk.freeze, "Стоп-кадр: нажмите на текст — перевод"),
+            (&hk.bad_translation, "Плохой перевод: забыть и перевести заново"),
+            (&hk.save_case, "Сохранить экран для проверки (разработчику)"),
         ] {
             if !search_hit(&format!("{k} {what}")) {
                 continue;
@@ -791,9 +806,28 @@ fn page_dictionaries(ui: &mut Ui, shared: &Arc<Shared>, edits: &mut HashMap<Stri
             });
         }
     });
-    if ui.button("⟳  Перечитать словари").clicked() {
-        shared.send(Command::ReloadGlossary);
-    }
+    ui.horizontal(|ui| {
+        if ui.button("⟳  Перечитать словари").clicked() {
+            shared.send(Command::ReloadGlossary);
+        }
+        if ui.button("Экспорт…").on_hover_text("Сохранить ваш глоссарий, исправления и переводы в один файл — чтобы поделиться").clicked() {
+            let sh = shared.clone();
+            let (date, _) = crate::win::local_date_time();
+            std::thread::spawn(move || {
+                if let Some(p) = crate::filepick::save_dicts(&format!("wuxia-словари-{date}.txt")) {
+                    sh.send(Command::ExportDicts(p));
+                }
+            });
+        }
+        if ui.button("Импорт…").on_hover_text("Добавить словари из файла другого игрока; ваши записи не пропадут").clicked() {
+            let sh = shared.clone();
+            std::thread::spawn(move || {
+                if let Some(p) = crate::filepick::open_dicts() {
+                    sh.send(Command::ImportDicts(p));
+                }
+            });
+        }
+    });
     ui.add_space(8.0);
 
     card(ui, "Последние реплики", |ui| {
@@ -834,6 +868,13 @@ fn page_check(ui: &mut Ui, shared: &Arc<Shared>, test_input: &mut String, ocr_vi
         hint(ui, "Нажмите кнопку и сразу переключитесь в игру (Alt+Tab). 10 секунд в центре экрана должна гореть надпись. Если её не видно — перевод тоже не будет виден: напишите об этом.");
         if ui.add(egui::Button::new(RichText::new("Показать надпись поверх игры").color(Color32::BLACK)).fill(GOLD)).clicked() {
             shared.send(Command::TestOverlay);
+        }
+    });
+    ui.add_space(8.0);
+    card(ui, "Самодиагностика", |ui| {
+        hint(ui, "Проверит распознавание текста, нейросеть, окно игры, окно перевода, снимок экрана и горячие клавиши. Запустите игру перед проверкой. Отчёт откроется в Блокноте — его можно прислать разработчику.");
+        if ui.add(egui::Button::new(RichText::new("Проверить всё").color(Color32::BLACK)).fill(GOLD)).clicked() {
+            shared.send(Command::Diagnose);
         }
     });
     ui.add_space(8.0);

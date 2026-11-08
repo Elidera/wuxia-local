@@ -19,6 +19,8 @@ pub fn spawn(keys: &Hotkeys, tx: UnboundedSender<Command>) -> std::sync::mpsc::R
         (keys.select_region.clone(), Command::SelectRegion),
         (keys.panel.clone(), Command::TogglePanel),
         (keys.save_case.clone(), Command::SaveCase),
+        (keys.freeze.clone(), Command::Freeze),
+        (keys.bad_translation.clone(), Command::BadTranslation),
     ];
     let (rep_tx, rep_rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()

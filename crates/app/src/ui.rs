@@ -28,6 +28,10 @@ pub struct WuxiaApp {
     region_tex: Option<egui::TextureHandle>,
     ocr_tex: Option<(u64, egui::TextureHandle)>,
     drag_start: Option<Pos2>,
+    /// Freeze frame picture (id of the view it belongs to) and the last
+    /// popup rectangle (clicks inside it are not clicks on the picture).
+    freeze_tex: Option<(u64, egui::TextureHandle)>,
+    freeze_pop: Option<Rect>,
     panel_state: crate::ui_panel::PanelState,
     cfg_dirty_since: Option<Instant>,
 }
@@ -79,6 +83,8 @@ impl WuxiaApp {
             region_tex: None,
             ocr_tex: None,
             drag_start: None,
+            freeze_tex: None,
+            freeze_pop: None,
             panel_state: crate::ui_panel::PanelState::default(),
             cfg_dirty_since: None,
         }
@@ -108,6 +114,14 @@ impl eframe::App for WuxiaApp {
             self.region_window(ctx, &cfg);
         } else {
             self.region_tex = None;
+        }
+        let freeze = self.shared.ui.lock().unwrap().freeze.clone();
+        match freeze {
+            Some(f) => self.freeze_window(ctx, f),
+            None => {
+                self.freeze_tex = None;
+                self.freeze_pop = None;
+            }
         }
 
         if panel_open {
@@ -233,6 +247,137 @@ impl WuxiaApp {
                     }
                 });
                 ctx.request_repaint();
+            },
+        );
+    }
+
+    /// Freeze frame (Ctrl+F8): the still picture with every text outlined; a click
+    /// translates the text under the mouse in a small card with copy buttons.
+    fn freeze_window(&mut self, ctx: &egui::Context, f: crate::state::FreezeView) {
+        if self.freeze_tex.as_ref().map_or(true, |(id, _)| *id != f.id) {
+            let mut rgba = Vec::with_capacity(f.shot.bgra.len());
+            for p in f.shot.bgra.chunks_exact(4) {
+                rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
+            }
+            let img = egui::ColorImage::from_rgba_unmultiplied([f.shot.width as usize, f.shot.height as usize], &rgba);
+            self.freeze_tex = Some((f.id, ctx.load_texture("freeze_shot", img, egui::TextureOptions::LINEAR)));
+        }
+        let Some((_, tex)) = self.freeze_tex.clone() else { return };
+        let shared = self.shared.clone();
+        let pop = &mut self.freeze_pop;
+        ctx.show_viewport_immediate(
+            ViewportId::from_hash_of("wuxia_freeze"),
+            ViewportBuilder::default()
+                .with_title("Wuxia Local — стоп-кадр")
+                .with_fullscreen(true)
+                .with_decorations(false)
+                .with_always_on_top(),
+            |ctx, _class| {
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    shared.send(Command::FreezeClose);
+                }
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    let screen = ctx.screen_rect();
+                    let k = screen.width() / f.shot.width.max(1) as f32; // picture px → points
+                    let painter = ui.painter();
+                    painter.image(tex.id(), screen, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    let (clicked, pos, cancel) = ctx.input(|i| {
+                        (i.pointer.primary_clicked(), i.pointer.interact_pos().or(i.pointer.hover_pos()), i.key_pressed(egui::Key::Escape) || i.pointer.secondary_clicked())
+                    });
+                    if cancel {
+                        shared.send(Command::FreezeClose);
+                        return;
+                    }
+                    let rect_of = |l: &crate::state::FreezeLine| {
+                        Rect::from_min_size(Pos2::new(l.rect.x * k, l.rect.y * k), Vec2::new(l.rect.w * k, l.rect.h * k)).expand(3.0)
+                    };
+                    // The smallest outlined text under the mouse.
+                    let under = pos.and_then(|p| {
+                        f.lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, l)| rect_of(l).contains(p))
+                            .min_by(|a, b| (rect_of(a.1).area()).partial_cmp(&rect_of(b.1).area()).unwrap_or(std::cmp::Ordering::Equal))
+                            .map(|(i, _)| i)
+                    });
+                    for (i, l) in f.lines.iter().enumerate() {
+                        let (w, c) = if f.selected == Some(i) {
+                            (2.5, Color32::from_rgb(255, 205, 90))
+                        } else if under == Some(i) {
+                            (2.0, Color32::from_rgb(255, 230, 160))
+                        } else {
+                            (1.2, Color32::from_white_alpha(150))
+                        };
+                        painter.rect_stroke(rect_of(l), Rounding::same(3.0), Stroke::new(w, c));
+                    }
+                    let help = if f.busy {
+                        "Стоп-кадр: ищу текст на снимке…".to_string()
+                    } else if f.lines.is_empty() {
+                        "Стоп-кадр: текста на снимке не найдено. Esc — закрыть.".to_string()
+                    } else {
+                        format!("Стоп-кадр: нажмите на текст — появится перевод ({} найдено). Esc или правая кнопка — закрыть.", f.lines.len())
+                    };
+                    let g = ctx.fonts(|fo| fo.layout(help, FontId::proportional(18.0), Color32::WHITE, screen.width() * 0.8));
+                    let hr = Rect::from_center_size(Pos2::new(screen.center().x, 30.0 + g.size().y / 2.0), g.size() + Vec2::splat(18.0));
+                    painter.rect_filled(hr, Rounding::same(8.0), Color32::from_black_alpha(210));
+                    painter.galley(hr.min + Vec2::splat(9.0), g, Color32::WHITE);
+
+                    let on_popup = pos.map_or(false, |p| pop.map_or(false, |r| r.contains(p)));
+                    if clicked && !on_popup {
+                        if let Some(i) = under {
+                            shared.ui(|u| {
+                                if let Some(fv) = u.freeze.as_mut() {
+                                    fv.selected = Some(i);
+                                }
+                            });
+                            shared.send(Command::FreezeTranslate(i));
+                        }
+                    }
+
+                    // Card with the translation of the selected text.
+                    *pop = None;
+                    if let Some(l) = f.selected.and_then(|i| f.lines.get(i)) {
+                        let r = rect_of(l);
+                        let below = r.max.y + 260.0 < screen.max.y;
+                        let at = if below { Pos2::new(r.min.x, r.max.y + 6.0) } else { Pos2::new(r.min.x, (r.min.y - 230.0).max(0.0)) };
+                        let resp = egui::Area::new(egui::Id::new("freeze_card")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
+                            egui::Frame::popup(ui.style()).fill(Color32::from_rgb(24, 26, 34)).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+                                ui.set_max_width(520.0);
+                                ui.label(egui::RichText::new(&l.src).size(15.0).color(Color32::from_rgb(190, 185, 170)));
+                                ui.add_space(4.0);
+                                match (&l.dst, l.pending) {
+                                    (Some(d), _) => {
+                                        ui.label(egui::RichText::new(d).size(20.0).color(Color32::from_rgb(250, 246, 235)));
+                                    }
+                                    (None, true) => {
+                                        ui.label(egui::RichText::new("Перевожу…").size(18.0).color(Color32::from_rgb(220, 210, 190)));
+                                    }
+                                    (None, false) => {
+                                        ui.label(egui::RichText::new("…").size(18.0));
+                                    }
+                                }
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if let Some(d) = &l.dst {
+                                        if ui.button("Копировать перевод").clicked() {
+                                            ui.ctx().copy_text(d.clone());
+                                        }
+                                    }
+                                    if ui.button("Копировать оригинал").clicked() {
+                                        ui.ctx().copy_text(l.src.clone());
+                                    }
+                                    if let Some(d) = l.dst.as_ref().filter(|_| l.src.chars().count() <= 40) {
+                                        if ui.button("В словарь").on_hover_text("Всегда переводить это так (ваш глоссарий)").clicked() {
+                                            shared.send(Command::AddTerm { src: l.src.clone(), dst: d.clone() });
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                        *pop = Some(resp.response.rect);
+                    }
+                });
+                ctx.request_repaint_after(Duration::from_millis(100));
             },
         );
     }

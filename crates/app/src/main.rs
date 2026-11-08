@@ -17,6 +17,8 @@ mod config;
 #[cfg(windows)]
 mod dialogue;
 #[cfg(windows)]
+mod extras;
+#[cfg(windows)]
 mod filepick;
 #[cfg(windows)]
 mod hotkeys;
@@ -146,6 +148,7 @@ mod app {
         // Hotkeys.
         let problems = hotkeys::spawn(&cfg.hotkeys, cmd_tx.clone());
         if let Ok(p) = problems.recv_timeout(std::time::Duration::from_secs(2)) {
+            shared.ui(|u| u.hotkey_problems = p.clone());
             for msg in p {
                 shared.ui(|u| u.notice(msg));
             }
@@ -398,6 +401,25 @@ mod app {
                     }
                     None => shared.ui(|u| u.notice("OCR не готов — снимок для теста не сохранить")),
                 },
+                Command::ExportDicts(path) => crate::extras::export_dicts(&shared, &tr, &path),
+                Command::ImportDicts(path) => crate::extras::import_dicts(&shared, &tr, &path),
+                Command::BadTranslation => {
+                    tokio::spawn(crate::extras::bad_translation(shared.clone(), tr.clone()));
+                }
+                Command::Freeze => match &ocr {
+                    Some(o) => {
+                        tokio::spawn(crate::extras::freeze(shared.clone(), o.clone()));
+                    }
+                    None => shared.ui(|u| u.notice("Стоп-кадр: распознавание текста не готово")),
+                },
+                Command::FreezeTranslate(i) => {
+                    tokio::spawn(crate::extras::freeze_translate(shared.clone(), tr.clone(), i));
+                }
+                Command::FreezeClose => shared.ui(|u| u.freeze = None),
+                Command::AddTerm { src, dst } => crate::extras::add_term(&shared, &tr, &src, &dst),
+                Command::Diagnose => {
+                    tokio::spawn(crate::extras::diagnose(shared.clone(), tr.clone(), ocr.clone()));
+                }
                 Command::TestOverlay => {
                     shared.ui(|u| u.test_overlay_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(10)));
                 }

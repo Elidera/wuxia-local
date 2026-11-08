@@ -75,6 +75,13 @@ impl FuzzyMemory {
     pub fn clear(&mut self) {
         self.items.clear();
     }
+
+    /// Forget a line and its OCR variants (the user marked its translation bad).
+    pub fn forget(&mut self, src: &str) {
+        let k = fold(src);
+        let t = self.threshold;
+        self.items.retain(|(s, _)| *s != k && similarity::ratio(s, &k) < t);
+    }
 }
 
 /// Spellings of speaker names seen so far.
@@ -130,6 +137,8 @@ mod tests {
         );
         assert_eq!(m.find("There's nothing quite like being off duty in a quiet residential area. None of it was worth it."), None);
         assert_eq!(m.find("Thank you."), None);
+        m.forget("There's nothing quite like being on duty in a bustling commercial area. All that time I spent applying for this job feels worth it!");
+        assert_eq!(m.find("There's nothing quite like being on duty in a bustling commercial area. All that time I spent applying for this job feels worth it."), None);
     }
 
     #[test]

@@ -53,17 +53,25 @@ enum Corner {
     Center,
 }
 
+/// The user's look for translations: font, colours, outline (Settings).
+#[derive(Debug, Clone, PartialEq)]
+struct Look {
+    color: [u8; 3],
+    name: [u8; 3],
+    outline: bool,
+}
+
 /// What should be on screen, independent of pixels. Re-rendered only when it changes.
 #[derive(Debug, Clone, PartialEq)]
 enum El {
     /// A translation plate next to the original text (x, y, w, h in screen px).
-    Plate { anchor: [f32; 4], speaker: Option<String>, body: String, dim: bool, size_pt: f32, position: String, opacity: f32 },
+    Plate { anchor: [f32; 4], speaker: Option<String>, body: String, dim: bool, size_pt: f32, position: String, opacity: f32, look: Look },
     /// Interface Mode: Russian label painted over the original one.
     Label { rect: [f32; 4], text: String, bg: [u8; 3], fg: [u8; 3], plate: bool, font_scale: f32 },
     /// Interface Mode "list": all labels in one box on the right.
     List { text: String },
     /// «Своё окно»: all current lines inside the user's box (speaker, text, still translating).
-    BoxPlate { rect: [f32; 4], lines: Vec<(Option<String>, String, bool)>, size_pt: f32, opacity: f32 },
+    BoxPlate { rect: [f32; 4], lines: Vec<(Option<String>, String, bool)>, size_pt: f32, opacity: f32, look: Look },
     /// The box while it is being moved / resized.
     EditBox { rect: [f32; 4], size_pt: f32 },
     Badge { text: String, corner: Corner, size_pt: f32 },
@@ -83,14 +91,15 @@ fn plate_text(source: &str, translation: &str, pending: bool, error: Option<&Str
 
 fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
     let mut out = Vec::new();
-    if u.selecting_region {
-        return out; // the region picker is its own window
+    if u.selecting_region || u.freeze.is_some() {
+        return out; // the region picker / freeze frame is its own window
     }
     let show_original = u.show_original;
     let opacity = cfg.dialogue.backdrop_opacity;
     let b = cfg.dialogue.box_rect;
     let box_px = [b[0] * screen.0, b[1] * screen.1, b[2] * screen.0, b[3] * screen.1];
     let in_box = cfg.dialogue.position == "box";
+    let look = Look { color: cfg.dialogue.overlay_color, name: cfg.dialogue.overlay_name_color, outline: cfg.dialogue.overlay_outline };
     if u.edit_box {
         out.push(El::EditBox { rect: box_px, size_pt: cfg.dialogue.font_size });
     } else if u.interface.is_none() && in_box {
@@ -107,7 +116,7 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
             }
         }
         if !lines.is_empty() {
-            out.push(El::BoxPlate { rect: box_px, lines, size_pt: cfg.dialogue.font_size, opacity });
+            out.push(El::BoxPlate { rect: box_px, lines, size_pt: cfg.dialogue.font_size, opacity, look: look.clone() });
         }
     }
     if u.edit_box || (u.interface.is_none() && in_box) {
@@ -152,6 +161,7 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
                 size_pt: cfg.dialogue.font_size * 0.85,
                 position,
                 opacity,
+                look: look.clone(),
             });
         }
     } else if let Some(d) = &u.dialogue {
@@ -165,6 +175,7 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
                 size_pt: cfg.dialogue.font_size,
                 position: cfg.dialogue.position.clone(),
                 opacity,
+                look: look.clone(),
             });
         }
     }
@@ -228,7 +239,7 @@ fn alpha(a: f32) -> u8 {
 fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
     let s = scale;
     match el {
-        El::Plate { anchor, speaker, body, dim, size_pt, position, opacity } => {
+        El::Plate { anchor, speaker, body, dim, size_pt, position, opacity, look } => {
             let px = (size_pt * s).round().max(8.0) as i32;
             let wrap = (anchor[2] * 1.1).max(300.0 * s) as i32;
             let (bw, bh) = g.measure(body, px, false, PARA, wrap);
@@ -242,7 +253,16 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
             let r = raster::place_plate(*anchor, (pw as f32, ph as f32), position, screen, 6.0 * s);
             let (x, y) = (r[0] as i32, r[1] as i32);
             let a = if position == "over" { opacity.max(0.92) } else { *opacity };
-            let outline = Some((Rgba(0, 0, 0, 200), (1.5 * s).round() as i32));
+            let outline = look.outline.then(|| (Rgba(0, 0, 0, 200), (1.5 * s).round().max(1.0) as i32));
+            let text_color = |dim: bool| {
+                let [r, g, b] = look.color;
+                if dim {
+                    Rgba(((r as u16 * 9) / 10) as u8, ((g as u16 * 9) / 10) as u8, ((b as u16 * 9) / 10) as u8, 255)
+                } else {
+                    Rgba(r, g, b, 255)
+                }
+            };
+            let name_color = Rgba(look.name[0], look.name[1], look.name[2], 255);
             let mut texts = Vec::new();
             if let Some(sp) = speaker {
                 texts.push(TextJob {
@@ -254,7 +274,7 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                     y: y + pady,
                     w: sw + 2,
                     h: sh,
-                    color: Rgba(240, 200, 120, 255),
+                    color: name_color,
                     outline,
                 });
             }
@@ -267,27 +287,28 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
                 y: y + pady + sh,
                 w: bw + 2,
                 h: bh,
-                color: if *dim { Rgba(225, 225, 225, 255) } else { Rgba(250, 246, 235, 255) },
+                color: text_color(*dim),
                 outline,
             });
             Some(Op::new([x, y, pw, ph], Rgba(0, 0, 0, alpha(a)), 8.0 * s, texts))
         }
-        El::BoxPlate { rect, lines, size_pt, opacity } => {
+        El::BoxPlate { rect, lines, size_pt, opacity, look } => {
             let px = (size_pt * s).round().max(8.0) as i32;
             let (padx, pady) = ((16.0 * s) as i32, (10.0 * s) as i32);
             let [bx, by, bw, bh] = rect.map(|v| v as i32);
             let inner = (bw - 2 * padx).max(80);
             let gap = px / 2;
-            let outline = Some((Rgba(0, 0, 0, 200), (1.5 * s).round() as i32));
+            let outline = look.outline.then(|| (Rgba(0, 0, 0, 200), (1.5 * s).round().max(1.0) as i32));
+            let [cr, cg, cb] = look.color;
             // Measure every line first, then centre the whole block in the box.
             let mut parts: Vec<(String, bool, Rgba, i32, i32)> = Vec::new();
             for (i, (speaker, body, dim)) in lines.iter().enumerate() {
                 if let Some(sp) = speaker {
                     let (w, h) = g.measure(sp, px, true, PARA, inner);
-                    parts.push((sp.clone(), true, Rgba(240, 200, 120, 255), w, h));
+                    parts.push((sp.clone(), true, Rgba(look.name[0], look.name[1], look.name[2], 255), w, h));
                 }
                 let (w, h) = g.measure(body, px, false, PARA, inner);
-                let color = if *dim { Rgba(225, 225, 225, 255) } else { Rgba(250, 246, 235, 255) };
+                let color = if *dim { Rgba(((cr as u16 * 9) / 10) as u8, ((cg as u16 * 9) / 10) as u8, ((cb as u16 * 9) / 10) as u8, 255) } else { Rgba(cr, cg, cb, 255) };
                 // The gap after a line is stored in its height.
                 let extra = if i + 1 < lines.len() { gap } else { 0 };
                 parts.push((body.clone(), false, color, w, h + extra));
@@ -421,11 +442,26 @@ fn layout(el: &El, g: &mut Gdi, scale: f32, screen: (f32, f32)) -> Option<Op> {
 struct Gdi {
     dc: HDC,
     fonts: HashMap<(i32, bool), HFONT>,
+    /// Font family for everything drawn (the user's choice; Segoe UI by default).
+    face: String,
 }
 
 impl Gdi {
     unsafe fn new() -> Self {
-        Self { dc: CreateCompatibleDC(HDC::default()), fonts: HashMap::new() }
+        Self { dc: CreateCompatibleDC(HDC::default()), fonts: HashMap::new(), face: "Segoe UI".into() }
+    }
+
+    /// Switch the font family (cached fonts of the old one are released).
+    fn set_face(&mut self, face: &str) {
+        let face = if face.trim().is_empty() { "Segoe UI" } else { face.trim() };
+        if self.face != face {
+            self.face = face.to_string();
+            for (_, f) in self.fonts.drain() {
+                unsafe {
+                    let _ = DeleteObject(f);
+                }
+            }
+        }
     }
 
     unsafe fn font(&mut self, px: i32, bold: bool) -> HFONT {
@@ -439,7 +475,7 @@ impl Gdi {
             lfQuality: ANTIALIASED_QUALITY,
             ..Default::default()
         };
-        for (i, c) in "Segoe UI".encode_utf16().enumerate() {
+        for (i, c) in self.face.encode_utf16().take(31).enumerate() {
             lf.lfFaceName[i] = c;
         }
         let f = CreateFontIndirectW(&lf);
@@ -742,7 +778,8 @@ impl Window {
     }
 
     /// Lay out, draw and show `els`. Returns the screen rectangles drawn.
-    fn render(&mut self, els: &[El], screen: (i32, i32)) -> Vec<[i32; 4]> {
+    fn render(&mut self, els: &[El], screen: (i32, i32), face: &str) -> Vec<[i32; 4]> {
+        self.gdi.set_face(face);
         // Text grows with the screen: font 26 is meant for 1080p, on 1440p and 4K
         // it would be tiny when Windows scaling is left at 100 %.
         let scale = self.scale().max(screen.1 as f32 / 1080.0);
@@ -836,7 +873,7 @@ pub fn spawn(shared: Arc<Shared>) {
         };
         tracing::info!("оверлей: окно создано (layered, topmost)");
         let mut applied_visibility: Option<bool> = None;
-        let mut last: Option<(Vec<El>, (i32, i32))> = None;
+        let mut last: Option<(Vec<El>, (i32, i32), String)> = None;
         let mut last_raise = Instant::now();
         loop {
             unsafe {
@@ -862,10 +899,11 @@ pub fn spawn(shared: Arc<Shared>) {
                 (scene(&u, &cfg, (screen.0 as f32, screen.1 as f32), scale), u.edit_box)
             };
             w.set_interactive(editing);
-            if last.as_ref().map_or(true, |(e, s)| *e != els || *s != screen) {
-                let rects = w.render(&els, screen);
+            let face = cfg.dialogue.overlay_font.clone();
+            if last.as_ref().map_or(true, |(e, s, f)| *e != els || *s != screen || *f != face) {
+                let rects = w.render(&els, screen, &face);
                 *shared.overlay_px.lock().unwrap() = rects;
-                last = Some((els, screen));
+                last = Some((els, screen, face));
             }
             if w.shown && last_raise.elapsed() > Duration::from_millis(500) {
                 unsafe { w.raise() };
