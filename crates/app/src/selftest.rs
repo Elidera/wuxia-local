@@ -75,13 +75,15 @@ pub fn save_png(frame: &Frame, path: &Path) -> Result<()> {
 /// Run the real pipeline on one picture: what the auto mode would translate and
 /// what F8 would. Returns (found, OCR time in ms).
 pub async fn analyse(frame: &Frame, lang: Lang, ocr: &Ocr, tr: &Translator) -> Result<(Found, u128)> {
-    analyse_with(ocr.engine(), frame, lang, ocr, tr).await
+    analyse_with(ocr.engine(), frame, lang, ocr, tr).await.map(|(f, ms, _)| (f, ms))
 }
 
-pub async fn analyse_with(engine: Engine, frame: &Frame, lang: Lang, ocr: &Ocr, tr: &Translator) -> Result<(Found, u128)> {
+/// Like `analyse`, with a given engine; also returns the raw OCR lines (text, confidence).
+pub async fn analyse_with(engine: Engine, frame: &Frame, lang: Lang, ocr: &Ocr, tr: &Translator) -> Result<(Found, u128, Vec<(String, Option<f32>)>)> {
     let t0 = Instant::now();
     let lines = ocr.recognize_with(engine, frame.clone(), 1, lang).await?;
     let ms = t0.elapsed().as_millis();
+    let raw: Vec<(String, Option<f32>)> = lines.iter().map(|l| (l.text.clone(), l.conf)).collect();
     let speech = crate::auto::speech_blocks(&lines, lang, tr).into_iter().map(|(t, _)| t).collect();
     let up = crate::interface::upscale_for(0, frame.height as i32);
     let label_lines = if up == 1 { lines } else { ocr.recognize_with(engine, frame.clone(), up, lang).await? };
@@ -94,7 +96,7 @@ pub async fn analyse_with(engine: Engine, frame: &Frame, lang: Lang, ocr: &Ocr, 
             }
         }
     }
-    Ok((Found { speech, labels }, ms))
+    Ok((Found { speech, labels }, ms, raw))
 }
 
 fn arg_after(args: &[String], key: &str) -> Option<String> {
@@ -166,6 +168,7 @@ fn run(dir: &Path, models: Option<PathBuf>) -> Result<(i32, String)> {
 /// One engine over all pictures: (exit code, report section, summary table row).
 fn run_engine(rt: &tokio::runtime::Runtime, engine: Engine, pngs: &[PathBuf], ocr: &Ocr, tr: &Translator) -> (i32, String, String) {
     let mut results = Vec::new();
+    let mut raws: Vec<(String, Vec<(String, Option<f32>)>)> = Vec::new();
     let mut no_ocr: Option<String> = None;
     for p in pngs {
         let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?").to_string();
@@ -185,10 +188,11 @@ fn run_engine(rt: &tokio::runtime::Runtime, engine: Engine, pngs: &[PathBuf], oc
                     res.error = Some(format!("Windows OCR для языка «{}» не установлен", expect.lang.name_ru()));
                 } else {
                     match load_png(p).and_then(|f| rt.block_on(analyse_with(engine, &f, expect.lang, ocr, tr))) {
-                        Ok((found, ms)) => {
+                        Ok((found, ms, raw)) => {
                             res.checks = st::check(&expect, &found);
                             res.found = found;
                             res.ocr_ms = ms;
+                            raws.push((res.name.clone(), raw));
                         }
                         Err(e) => res.error = Some(format!("{e:#}")),
                     }
@@ -197,7 +201,16 @@ fn run_engine(rt: &tokio::runtime::Runtime, engine: Engine, pngs: &[PathBuf], oc
         }
         results.push(res);
     }
-    let part = st::report(&results, &format!("Проверка на снимках: {}", engine.name_ru())).replacen("# ", "## ", 1).replace("\n## ", "\n### ");
+    let mut part = st::report(&results, &format!("Проверка на снимках: {}", engine.name_ru())).replacen("# ", "## ", 1).replace("\n## ", "\n### ");
+    // Raw lines with confidence: to tune the filters.
+    for (name, raw) in raws.iter().filter(|(_, r)| r.iter().any(|(_, c)| c.is_some())) {
+        part.push_str(&format!("\n<details><summary>Строки OCR «{name}» с уверенностью</summary>\n\n"));
+        for (t, c) in raw {
+            let c = c.map_or("—".to_string(), |c| format!("{:.2}", c));
+            part.push_str(&format!("- {c} `{}`\n", t.replace('`', "'")));
+        }
+        part.push_str("\n</details>\n");
+    }
     let passed = results.iter().filter(|r| r.passed()).count();
     let rules: usize = results.iter().map(|c| c.checks.len()).sum();
     let rules_ok: usize = results.iter().map(|c| c.checks.iter().filter(|x| x.ok).count()).sum();
