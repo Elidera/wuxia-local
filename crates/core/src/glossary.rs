@@ -4,6 +4,11 @@
 //! `源词<TAB>перевод<TAB>необязательная заметка`
 //! Lines starting with `#` are comments. Later files override earlier ones,
 //! so a user glossary can override the bundled one.
+//!
+//! * In dialogue, an English term written with a capital letter matches only
+//!   words with a capital: the game term «Echo» yes, the ordinary word «echo» no.
+//! * A note may end with «кроме 辽阔 辽远»: inside these words the term is not
+//!   looked for (one-character Chinese terms hide inside ordinary words).
 
 use crate::tsv;
 use std::collections::{HashMap, HashSet};
@@ -25,6 +30,23 @@ pub struct Glossary {
     /// Terms from interface dictionaries (`*game_ui*.tsv`): short common words
     /// ("Back", "Map") that are right for menu labels but noise in dialogue.
     ui_only: HashSet<usize>,
+    /// Words in which a term must not be found («кроме …» in its note).
+    exclude: HashMap<usize, Vec<Vec<char>>>,
+}
+
+/// Split «государство киданей; кроме 辽阔 辽远» into the note and the exclusions.
+fn split_exclusions(note: &str) -> (String, Vec<Vec<char>>) {
+    match note.find("кроме") {
+        Some(pos) => {
+            let words = note[pos + "кроме".len()..]
+                .split(|c: char| c.is_whitespace() || c == ',' || c == '，' || c == '、')
+                .filter(|w| !w.is_empty())
+                .map(|w| w.chars().collect())
+                .collect();
+            (note[..pos].trim().trim_end_matches([';', ',']).trim().to_string(), words)
+        }
+        None => (note.to_string(), Vec::new()),
+    }
 }
 
 impl Glossary {
@@ -46,14 +68,22 @@ impl Glossary {
         if src.is_empty() || dst.is_empty() {
             return;
         }
-        let t = Term { src: src.to_string(), dst: dst.to_string(), note: note.trim().to_string() };
+        let (note, exclude) = split_exclusions(note.trim());
+        let t = Term { src: src.to_string(), dst: dst.to_string(), note };
         let key = key_of(src);
-        if let Some(&i) = self.index.get(&key) {
+        let i = if let Some(&i) = self.index.get(&key) {
             self.terms[i] = t;
             self.ui_only.remove(&i);
+            i
         } else {
             self.index.insert(key, self.terms.len());
             self.terms.push(t);
+            self.terms.len() - 1
+        };
+        if exclude.is_empty() {
+            self.exclude.remove(&i);
+        } else {
+            self.exclude.insert(i, exclude);
         }
         let n = src.chars().count();
         if !self.lengths.contains(&n) {
@@ -108,8 +138,17 @@ impl Glossary {
         self.find_impl(text, limit, false)
     }
 
+    /// Is the match at `i` part of one of the term's excluded words?
+    fn excluded(&self, idx: usize, chars: &[char], i: usize) -> bool {
+        let Some(words) = self.exclude.get(&idx) else { return false };
+        words.iter().any(|w| {
+            (0..w.len()).any(|off| i >= off && i - off + w.len() <= chars.len() && chars[i - off..i - off + w.len()] == w[..])
+        })
+    }
+
     fn find_impl(&self, text: &str, limit: usize, skip_ui: bool) -> Vec<&Term> {
-        let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+        let original: Vec<char> = text.chars().collect();
+        let chars: Vec<char> = original.iter().map(|c| c.to_ascii_lowercase()).collect();
         let mut found: Vec<usize> = Vec::new();
         let mut i = 0;
         'outer: while i < chars.len() && found.len() < limit {
@@ -119,7 +158,16 @@ impl Glossary {
                 }
                 let cand: String = chars[i..i + len].iter().collect();
                 if let Some(&idx) = self.index.get(&cand) {
+                    if self.excluded(idx, &chars, i) {
+                        continue;
+                    }
                     let latin = cand.chars().any(|c| c.is_ascii_alphabetic());
+                    // «Echo» (game term) must not catch the ordinary word «echo».
+                    let capital_term = self.terms[idx].src.chars().next().map_or(false, |c| c.is_uppercase());
+                    // (Dialogue only: menu labels keep matching any case.)
+                    if skip_ui && latin && capital_term && original[i].is_lowercase() {
+                        continue;
+                    }
                     let mut end = i + len;
                     if latin {
                         let word = |c: Option<&char>| c.map_or(false, |c| c.is_alphanumeric());
@@ -216,11 +264,27 @@ mod tests {
     fn english_terms() {
         let mut g = Glossary::new();
         g.load_tsv("Rover\tСкиталец\nEcho\tЭхо\nTacet Field\tПоле Тацет\nJinzhou\tЦзиньчжоу\n");
-        let found: Vec<_> = g.find_in("The rover absorbed two Echoes near the TACET FIELD of Jinzhou.", 10).iter().map(|t| t.dst.as_str()).collect();
+        let found: Vec<_> = g.find_in("The Rover absorbed two Echoes near the TACET FIELD of Jinzhou.", 10).iter().map(|t| t.dst.as_str()).collect();
         assert_eq!(found, vec!["Скиталец", "Эхо", "Поле Тацет", "Цзиньчжоу"]);
         // Not inside other words.
         assert!(g.find_in("Echolocation and Roverbot", 10).is_empty());
         assert_eq!(g.exact(" echo ").unwrap().dst, "Эхо");
+        // Ordinary lower-case words are not game terms.
+        assert!(g.find_in_dialogue("I heard an echo from the cave, said the rover.", 10).is_empty());
+        assert_eq!(g.find_in_dialogue("Absorb the Echo, Rover.", 10).len(), 2);
+        let mut lower = Glossary::new();
+        lower.load_tsv("jinzhou\tЦзиньчжоу\n");
+        assert_eq!(lower.find_in("to jinzhou", 5).len(), 1);
+    }
+
+    #[test]
+    fn exclusions_for_one_character_terms() {
+        let mut g = Glossary::new();
+        g.load_tsv("辽\tЛяо\tгосударство киданей; кроме 辽阔 辽远\n");
+        assert_eq!(g.terms()[0].note, "государство киданей");
+        assert!(g.find_in("这片辽阔的草原", 5).is_empty());
+        assert!(g.find_in("路途辽远", 5).is_empty());
+        assert_eq!(g.find_in("辽军南下", 5).len(), 1);
     }
 
     #[test]

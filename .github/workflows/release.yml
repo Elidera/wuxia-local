@@ -69,6 +69,8 @@ jobs:
             $exe = Get-ChildItem $d -Recurse -Filter llama-server.exe | Select-Object -First 1
             if (-not $exe) { throw "llama-server.exe not found in $d" }
             if ($exe.DirectoryName -ne (Resolve-Path $d).Path) { Move-Item "$($exe.DirectoryName)/*" $d -Force }
+            # Only llama-server and its DLLs are used: drop the other ~20 tools (~16 MB).
+            Get-ChildItem $d -Recurse -Filter *.exe | Where-Object Name -ne 'llama-server.exe' | Remove-Item -Force
           }
           "$tag" | Out-File dist/LLAMA_VERSION.txt
 

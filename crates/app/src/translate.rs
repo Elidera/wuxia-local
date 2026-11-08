@@ -307,20 +307,26 @@ impl Translator {
         };
         let ms = t0.elapsed().as_millis();
         tracing::info!(target: "translate", "[{}|{}|{ms} мс] {src} → {text}", preset.id, kind_tag(kind));
-        {
+        // The model samples (temperature 0.7, as Hy-MT recommends) and the cache
+        // keeps a translation forever: one that ignored the glossary is not cached,
+        // so the next time the line gets another chance.
+        let follows_glossary = {
             let g = self.glossary.lock().unwrap();
             let v = g.violations(src, &text);
             if !v.is_empty() {
-                tracing::debug!("глоссарий не соблюдён: {:?}", v.iter().map(|t| &t.src).collect::<Vec<_>>());
+                tracing::info!(target: "translate", "глоссарий не соблюдён ({:?}) — в кэш не кладу", v.iter().map(|t| &t.src).collect::<Vec<_>>());
             }
-        }
-        if opts.use_cache {
+            v.is_empty()
+        };
+        if opts.use_cache && follows_glossary {
             let line = self.cache.lock().unwrap().insert(&[&preset.id, kind_tag(kind), src], &text);
             append(&self.paths.cache(), &line);
         }
         let text = self.fix_ru(&text);
         if kind == TextKind::Dialogue {
-            self.fuzzy.lock().unwrap().remember(src, &text);
+            if follows_glossary {
+                self.fuzzy.lock().unwrap().remember(src, &text);
+            }
             if opts.use_history {
                 self.history.lock().unwrap().push(src, &text);
             }
@@ -382,7 +388,7 @@ impl Translator {
         if !lines.is_empty() {
             append(&self.paths.cache(), &lines);
         }
-        tracing::info!(target: "translate", "[{}|ui-batch|{} мс] {} надписей", preset.id, t0.elapsed().as_millis(), items.len());
+        tracing::info!(target: "translate", "[{}|ui-batch|{} мс] {}", preset.id, t0.elapsed().as_millis(), wuxia_core::text::count_ru(items.len(), "надпись", "надписи", "надписей"));
         Ok(out.into_iter().map(|t| t.map(|t| self.fix_ru(&t))).collect())
     }
 }

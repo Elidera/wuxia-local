@@ -25,3 +25,8 @@ Sanhua: Hesitation is a blade pointed at your own heart.
 The sky cracked open, and the sound... I still hear it in my dreams.
 Are you sure about this? Once we cross that bridge, there's no going back.
 Encore: Cosmos and I made you a present! Don't worry, it only exploded a little.
+# --- Добавлено 8.11: ловушки глоссария (обычные слова echo/lament не должны стать «Эхо»/«Плач»).
+I heard an echo from the cave, but nothing came out.
+Don't lament what's lost. Absorb the Echo and keep moving.
+Shorekeeper: The stars over the Black Shores are quieter tonight.
+Yinlin: 3 Tacet Discords near the Resonance Beacon. Take them out.

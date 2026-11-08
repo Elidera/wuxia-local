@@ -69,8 +69,8 @@ Name: "{group}\Папка данных Wuxia Local"; Filename: "{localappdata}\W
 Name: "{autodesktop}\Wuxia Local"; Filename: "{app}\wuxia-local.exe"; Tasks: desktopicon
 
 [Run]
-; Windows OCR language components (en-US, zh-CN). Run elevated in the background; no PowerShell knowledge needed.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""Add-WindowsCapability -Online -Name 'Language.OCR~~~en-US~0.0.1.0'; Add-WindowsCapability -Online -Name 'Language.OCR~~~zh-CN~0.0.1.0'"""; Verb: runas; Flags: shellexec waituntilterminated; Tasks: ocr; StatusMsg: "Установка модулей распознавания текста Windows…"
+; Windows OCR language components are installed from [Code] (CurStepChanged), so a
+; refused UAC prompt or a failed install is reported instead of passing silently.
 Filename: "{app}\wuxia-local.exe"; Description: "Запустить Wuxia Local"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
@@ -86,6 +86,44 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM wuxia-local.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Sleep(800);
   Result := '';
+end;
+
+// Windows OCR language components (en-US, zh-CN): elevated, hidden PowerShell.
+// Exit code 0 = both installed (checked afterwards, not just "no error").
+procedure InstallOcr();
+var
+  ResultCode: Integer;
+  Params: String;
+begin
+  Params := '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "' +
+    '$ok = $true; ' +
+    'foreach ($n in @(''Language.OCR~~~en-US~0.0.1.0'', ''Language.OCR~~~zh-CN~0.0.1.0'')) { ' +
+    'try { Add-WindowsCapability -Online -Name $n -ErrorAction Stop | Out-Null } catch { }; ' +
+    'if ((Get-WindowsCapability -Online -Name $n).State -ne ''Installed'') { $ok = $false } }; ' +
+    'if ($ok) { exit 0 } else { exit 3 }"';
+  WizardForm.StatusLabel.Caption := 'Установка модулей распознавания текста Windows…';
+  if not ShellExec('runas', 'powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('OCR: elevation refused or failed, code ' + IntToStr(ResultCode));
+    if not WizardSilent then
+      MsgBox('Модули распознавания текста Windows не установлены: не получено разрешение администратора.' + #13#10 + #13#10 +
+             'Wuxia Local покажет в панели, как установить их вручную (Параметры → Время и язык → Язык).', mbInformation, MB_OK);
+  end
+  else if ResultCode <> 0 then
+  begin
+    Log('OCR: install finished with code ' + IntToStr(ResultCode));
+    if not WizardSilent then
+      MsgBox('Не удалось установить модули распознавания текста Windows (код ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+             'Часто помогает перезагрузка и повторная установка. Wuxia Local покажет в панели, как установить их вручную.', mbInformation, MB_OK);
+  end
+  else
+    Log('OCR: language components installed');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and WizardIsTaskSelected('ocr') then
+    InstallOcr();
 end;
 
 function InitializeUninstall(): Boolean;

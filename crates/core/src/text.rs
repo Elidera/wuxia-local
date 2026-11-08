@@ -304,6 +304,17 @@ pub fn split_speaker(s: &str) -> (Option<&str>, &str) {
     (None, s)
 }
 
+/// "1 надпись", "2 надписи", "5 надписей", "21 надпись", "12 надписей".
+pub fn count_ru(n: usize, one: &str, few: &str, many: &str) -> String {
+    let word = match (n % 10, n % 100) {
+        (_, 11..=14) => many,
+        (1, _) => one,
+        (2..=4, _) => few,
+        _ => many,
+    };
+    format!("{n} {word}")
+}
+
 /// Light Russian typography cleanup on model output.
 pub fn tidy_russian(s: &str) -> String {
     let mut t = s.trim().to_string();
@@ -338,6 +349,17 @@ pub fn tidy_russian(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn russian_plural() {
+        let f = |n| count_ru(n, "надпись", "надписи", "надписей");
+        assert_eq!(f(1), "1 надпись");
+        assert_eq!(f(2), "2 надписи");
+        assert_eq!(f(5), "5 надписей");
+        assert_eq!(f(11), "11 надписей");
+        assert_eq!(f(21), "21 надпись");
+        assert_eq!(f(112), "112 надписей");
+    }
+
     #[test]
     fn speaker_split_by_ocr() {
         assert!(looks_like_speaker_en("Lang heng"));

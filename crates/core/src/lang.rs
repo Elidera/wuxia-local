@@ -85,7 +85,9 @@ pub fn sentence_like_en(s: &str) -> bool {
     if words.len() <= 2 {
         lower >= 1 || ends
     } else {
-        lower * 2 >= words.len()
+        // Game terms are Title Case ("3 Tacet Discords near the Resonance Beacon."):
+        // a finished sentence with a few ordinary words is still speech.
+        lower * 2 >= words.len() || (ends && lower >= 2)
     }
 }
 

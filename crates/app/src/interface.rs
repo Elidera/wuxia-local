@@ -224,7 +224,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                         }
                     }
                     if !rest.is_empty() {
-                        tracing::info!("пакет: {} надписей переведу по одной", rest.len());
+                        tracing::info!("пакет: {} переведу по одной", wuxia_core::text::count_ru(rest.len(), "надпись", "надписи", "надписей"));
                     }
                 }
                 Err(e) => tracing::warn!("пакетный перевод экрана: {e}; перевожу по одной"),
