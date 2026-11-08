@@ -32,6 +32,8 @@ pub struct Translator {
     last_dialogue: Mutex<Option<Instant>>,
     /// llama-server runs with one slot: serialize requests, dialogue first.
     gate: tokio::sync::Mutex<()>,
+    /// English words: real speech or an OCR fragment?
+    words: wuxia_core::words::Words,
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +151,8 @@ impl Translator {
         }
         let fixes = load_fixes(&paths);
         let glossary = load_glossary(&paths, profile);
-        tracing::info!("кэш: {} · исправления: {} · глоссарий: {}", cache.len(), corrections.len(), glossary.len());
+        let words = std::fs::read_to_string(paths.install.join("dict").join("en_words.txt")).map(|s| wuxia_core::words::Words::parse(&s)).unwrap_or_default();
+        tracing::info!("кэш: {} · исправления: {} · глоссарий: {} · английских слов: {}", cache.len(), corrections.len(), glossary.len(), words.len());
         Self {
             paths,
             client,
@@ -162,7 +165,13 @@ impl Translator {
             names: Mutex::new(NameBook::new()),
             last_dialogue: Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
+            words,
         }
+    }
+
+    /// Does an English OCR line read as real speech (not a cut-off fragment)?
+    pub fn english_ok(&self, s: &str) -> bool {
+        self.words.english_ok(s)
     }
 
     /// Re-read glossaries and fixes. Returns (terms, fix rules).

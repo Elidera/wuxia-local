@@ -95,6 +95,7 @@ jobs:
           Copy-Item assets/config.default.toml dist/
           Copy-Item -Recurse assets/glossary dist/glossary
           Copy-Item -Recurse assets/bench dist/bench
+          Copy-Item -Recurse assets/dict dist/dict
           Copy-Item README.md, LICENSE dist/
 
       - name: Windows OCR for English (for the screenshot tests)

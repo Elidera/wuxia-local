@@ -180,7 +180,7 @@ pub fn speech_blocks(lines: &[ocr::OcrLine], lang: lang::Lang, tr: &Translator) 
     for (bi, idx) in blocks.iter().enumerate() {
         let block: Vec<ocr::OcrLine> = idx.iter().map(|&i| lines[i].clone()).collect();
         let t = tr.fix_ocr(&ocr::subtitle_text(block, lang));
-        if !lang::is_subtitle(&t, lang) || tr.should_skip(&t) {
+        if !lang::is_subtitle(&t, lang) || tr.should_skip(&t) || (lang == lang::Lang::En && !tr.english_ok(&t)) {
             continue;
         }
         let r = brects[bi];

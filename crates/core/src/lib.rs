@@ -21,4 +21,5 @@ pub mod selftest;
 pub mod similarity;
 pub mod text;
 pub mod tsv;
+pub mod words;
 pub mod zone;

@@ -60,6 +60,7 @@ Source: "{#Dist}\LICENSE"; DestDir: "{app}"; Components: app; Flags: ignoreversi
 Source: "{#Dist}\LLAMA_VERSION.txt"; DestDir: "{app}"; Components: app; Flags: ignoreversion
 Source: "{#Dist}\glossary\*"; DestDir: "{app}\glossary"; Components: app; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\bench\*"; DestDir: "{app}\bench"; Components: app; Flags: ignoreversion recursesubdirs
+Source: "{#Dist}\dict\*"; DestDir: "{app}\dict"; Components: app; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\ocr\*"; DestDir: "{app}\ocr"; Components: app; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\llama-vulkan\*"; DestDir: "{app}\llama"; Components: vulkan; Flags: ignoreversion recursesubdirs
 Source: "{#Dist}\llama-cpu\*"; DestDir: "{app}\llama"; Components: cpu; Flags: ignoreversion recursesubdirs

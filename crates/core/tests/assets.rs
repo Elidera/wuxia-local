@@ -50,3 +50,18 @@ fn wuwa_glossary_and_english_lines() {
     }
     assert!(with_terms >= 10, "only {with_terms} test lines use glossary terms");
 }
+
+const EN_WORDS: &str = include_str!("../../../assets/dict/en_words.txt");
+const EN_LINES: &str = include_str!("../../../assets/bench/wuwa_en_lines.txt");
+
+#[test]
+fn english_word_list_accepts_real_lines() {
+    let w = wuxia_core::words::Words::parse(EN_WORDS);
+    assert!(w.len() > 50_000, "words: {}", w.len());
+    for l in EN_LINES.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
+        assert!(w.english_ok(l), "real line rejected: {l}");
+    }
+    for bad in ["ierminal", "no Haxan.no", "hing Fros", "nogxcav VA", "esis", "ike", "ors", "er", "IoTOB", "Cy6Tmp", "5TOMaTHK"] {
+        assert!(!w.english_ok(bad), "fragment accepted: {bad}");
+    }
+}
