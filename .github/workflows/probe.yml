@@ -1,0 +1,21 @@
+name: capture-probe
+# Which overlay windows Windows can hide from screen capture (Windows 10 family
+# = windows-2022, Windows 11 family = windows-2025).
+on:
+  workflow_dispatch:
+  push:
+    paths: ["tools/probe/**", ".github/workflows/probe.yml"]
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe
+        shell: pwsh
+        run: |
+          ./tools/probe/capture-probe.ps1 | Tee-Object probe.txt
+          "## ${{ matrix.os }}`n``````n$(Get-Content probe.txt -Raw)`n``````" >> $env:GITHUB_STEP_SUMMARY
