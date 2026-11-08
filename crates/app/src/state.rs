@@ -102,6 +102,8 @@ pub enum Command {
 
 #[derive(Debug, Clone, Default)]
 pub struct DialogueView {
+    /// Where the line is on screen (physical px), when known: «Поверх» covers it.
+    pub rect: Option<wuxia_core::image::Rect>,
     pub source: String,
     pub speaker: Option<String>,
     pub translation: String,

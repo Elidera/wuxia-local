@@ -188,7 +188,7 @@ impl AutoState {
 }
 
 /// Ask the overlay thread to hide and wait until the screen no longer shows it.
-async fn hide_overlay_briefly(shared: &Shared) {
+pub async fn hide_overlay_briefly(shared: &Shared) {
     use std::sync::atomic::Ordering;
     shared.hide_overlay.store(true, Ordering::SeqCst);
     for _ in 0..30 {

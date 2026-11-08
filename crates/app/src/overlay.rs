@@ -168,8 +168,13 @@ fn scene(u: &UiState, cfg: &Config, screen: (f32, f32), scale: f32) -> Vec<El> {
     } else if let Some(d) = &u.dialogue {
         if let Some((body, dim)) = plate_text(&d.source, &d.translation, d.pending, d.error.as_ref(), show_original) {
             let r = cfg.dialogue.region;
+            // «Поверх» covers the line itself, not the whole strip.
+            let anchor = match (&d.rect, cfg.dialogue.position == "over") {
+                (Some(l), true) => [l.x, l.y, l.w, l.h],
+                _ => [r[0] * screen.0, r[1] * screen.1, r[2] * screen.0, r[3] * screen.1],
+            };
             out.push(El::Plate {
-                anchor: [r[0] * screen.0, r[1] * screen.1, r[2] * screen.0, r[3] * screen.1],
+                anchor,
                 speaker: if show_original { None } else { d.speaker.clone() },
                 body,
                 dim,
@@ -899,6 +904,7 @@ pub fn spawn(shared: Arc<Shared>) {
         };
         tracing::info!("оверлей: окно создано (layered, topmost)");
         let mut applied_visibility: Option<bool> = None;
+        let mut affinity_failed: Option<(bool, Instant)> = None;
         let mut last: Option<(Vec<El>, (i32, i32), String)> = None;
         let mut last_raise = Instant::now();
         loop {
@@ -913,13 +919,25 @@ pub fn spawn(shared: Arc<Shared>) {
             // «Поверх»: the plate covers the original text, so our own capture must
             // see through it — the overlay is hidden from capture in this mode.
             let want = cfg.general.visible_in_screenshots && cfg.dialogue.position != "over";
-            if applied_visibility != Some(want) {
+            // Windows may refuse while the layered window has nothing drawn yet
+            // (error 8, «недостаточно ресурсов памяти» in the logs): try again
+            // once it is on screen, every few seconds.
+            let retry = affinity_failed.map_or(false, |(v, t): (bool, Instant)| v == want && w.shown && t.elapsed() > Duration::from_secs(3));
+            if applied_visibility != Some(want) || retry {
                 match crate::win::set_capture_visible(w.hwnd.0 as isize, want) {
-                    Ok(()) => tracing::info!("оверлей: видимость на скриншотах = {want}"),
-                    Err(e) => tracing::info!("оверлей: видимость на скриншотах не изменена ({e})"),
+                    Ok(()) => {
+                        tracing::info!("оверлей: видимость на скриншотах = {want}{}", if w.shown { "" } else { " (окно скрыто)" });
+                        affinity_failed = None;
+                        *shared.overlay_in_capture.lock().unwrap() = None; // check again
+                    }
+                    Err(e) => {
+                        if affinity_failed.is_none() || applied_visibility != Some(want) {
+                            tracing::info!("оверлей: видимость на скриншотах не изменена ({e}){}", if w.shown { "" } else { " — повторю, когда окно появится" });
+                        }
+                        affinity_failed = Some((want, Instant::now()));
+                    }
                 }
                 applied_visibility = Some(want);
-                *shared.overlay_in_capture.lock().unwrap() = None; // check again
             }
             // A reader wants to look under the plates for a moment.
             if shared.hide_overlay.load(Ordering::SeqCst) {
