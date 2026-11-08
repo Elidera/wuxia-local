@@ -2,7 +2,8 @@
 //! Window handles are passed around as `isize` because `HWND` is `!Send`.
 
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, RECT};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, RECT};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE,
 };
@@ -12,12 +13,33 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
+    FindWindowW, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW,
     SetForegroundWindow, SetWindowDisplayAffinity, ShowWindow, SW_RESTORE,
     SetWindowLongPtrW, GWL_EXSTYLE, SM_CXSCREEN, SM_CYSCREEN, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST,
 };
 use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
+
+/// Client area (the picture, without frame and title) of the foreground window
+/// in screen pixels, clipped to the primary screen.
+pub fn foreground_client_rect() -> Option<(i32, i32, i32, i32)> {
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.0.is_null() {
+            return None;
+        }
+        let mut rc = RECT::default();
+        GetClientRect(h, &mut rc).ok()?;
+        let mut pt = POINT { x: 0, y: 0 };
+        if !ClientToScreen(h, &mut pt).as_bool() {
+            return None;
+        }
+        let (sw, sh) = screen_size();
+        let (x0, y0) = (pt.x.max(0), pt.y.max(0));
+        let (x1, y1) = ((pt.x + rc.right).min(sw), (pt.y + rc.bottom).min(sh));
+        (x1 - x0 >= 320 && y1 - y0 >= 240).then_some((x0, y0, x1 - x0, y1 - y0))
+    }
+}
 
 /// Make the process per-monitor DPI aware so all coordinates are physical pixels.
 /// Must be called before any window is created.

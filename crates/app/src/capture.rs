@@ -34,6 +34,19 @@ impl PxRect {
     }
 }
 
+/// What to read: the game window's picture when the game is in front (no
+/// taskbar, no other windows, no desktop around a windowed game), otherwise the
+/// whole primary screen.
+pub fn game_area(cfg: &crate::config::Config) -> PxRect {
+    let (sw, sh) = crate::win::screen_size();
+    let full = PxRect { x: 0, y: 0, w: sw, h: sh };
+    let g = &cfg.general;
+    if g.window_match.trim().is_empty() || !crate::win::game_in_foreground(&g.window_match, crate::config::profile(&g.profile).window_class) {
+        return full;
+    }
+    crate::win::foreground_client_rect().map_or(full, |(x, y, w, h)| PxRect { x, y, w, h })
+}
+
 /// Capture and blank out everything our overlay is drawing right now (dialogue
 /// plate, screen-translation labels, status badges). On some PCs Windows refuses
 /// to hide the overlay from capture, and then OCR would read our own Russian text.

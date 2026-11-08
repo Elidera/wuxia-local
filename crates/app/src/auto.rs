@@ -13,7 +13,8 @@ use crate::translate::{Opts, Translator};
 use crate::win;
 use std::sync::Arc;
 use std::time::Instant;
-use wuxia_core::layout;
+use wuxia_core::image::Rect;
+use wuxia_core::{layout, zone};
 use wuxia_core::prompt::TextKind;
 use wuxia_core::{lang, similarity, text};
 
@@ -29,6 +30,9 @@ pub struct AutoState {
     prev: Vec<String>,
     active: Vec<Active>,
     next_id: u64,
+    /// Where real dialogue lines appeared (for finding the subtitle area).
+    zone_samples: Vec<Rect>,
+    zone_announced: bool,
 }
 
 /// Lines on screen at once; more is clutter (and model time).
@@ -44,12 +48,40 @@ impl AutoState {
         shared.ui(|u| u.auto_lines.clear());
     }
 
+    /// Find the subtitle area from where dialogue lines appeared, and use it as
+    /// the region for «Только область» — unless the user picked a strip by hand.
+    fn learn_zone(&mut self, shared: &Shared) {
+        let cfg = shared.cfg();
+        let r = cfg.dialogue.region;
+        if cfg.dialogue.region_set && r[2] * r[3] < 0.5 {
+            return;
+        }
+        let (sw, sh) = win::screen_size();
+        let Some(z) = zone::learn(&self.zone_samples, (sw as f32, sh as f32)) else { return };
+        if zone::overlap(z, r) > 0.9 && (z[3] - r[3]).abs() < 0.05 && (z[2] - r[2]).abs() < 0.05 {
+            return; // already known
+        }
+        {
+            let mut c = shared.cfg.write().unwrap();
+            c.dialogue.region = z;
+            c.dialogue.region_set = false; // found automatically: keeps adapting
+        }
+        shared.save_config();
+        tracing::info!("область субтитров найдена автоматически: {z:?} (по {} репликам)", self.zone_samples.len());
+        if !self.zone_announced {
+            self.zone_announced = true;
+            shared.ui(|u| {
+                u.notice("Область субтитров найдена автоматически. На слабом ПК выберите «Где искать текст → Только область» — так быстрее.")
+            });
+        }
+    }
+
     pub async fn scan(&mut self, shared: &Arc<Shared>, tr: &Arc<Translator>, ocr: &Ocr) {
         let cfg = shared.cfg();
         let lang = cfg.source_lang();
-        let (sw, sh) = win::screen_size();
-        let full = PxRect { x: 0, y: 0, w: sw, h: sh };
-        let frame = match capture::capture_clean(shared, full) {
+        // Only the game's own picture: no taskbar, desktop or other windows.
+        let area: PxRect = capture::game_area(&cfg);
+        let frame = match capture::capture_clean(shared, area) {
             Ok(f) => f,
             Err(e) => {
                 tracing::debug!(target: "dialogue", "авто: захват: {e}");
@@ -58,7 +90,7 @@ impl AutoState {
         };
         let t0 = Instant::now();
         let debug_frame = shared.ui.lock().unwrap().panel_open.then(|| Arc::new(frame.clone()));
-        let lines = match ocr.recognize(frame, 1, lang).await {
+        let mut lines = match ocr.recognize(frame, 1, lang).await {
             Ok(l) => l,
             Err(e) => {
                 shared.ui(|u| u.notice(format!("OCR: {e}")));
@@ -66,6 +98,9 @@ impl AutoState {
             }
         };
         let ocr_ms = t0.elapsed().as_millis();
+        for l in lines.iter_mut() {
+            l.rect = l.rect.offset(area.x as f32, area.y as f32); // to screen coordinates
+        }
 
         let found = speech_blocks(&lines, lang, tr);
 
@@ -101,13 +136,25 @@ impl AutoState {
         self.active.retain(|a| a.missed < 2);
         let room = MAX_LINES.saturating_sub(self.active.len());
         let mut started: Vec<AutoLine> = Vec::new();
+        let mut learned = false;
         for (t, r) in new.into_iter().take(room) {
+            // Real dialogue (not a menu label or a short hint) teaches where subtitles are.
+            if t.split_whitespace().count() >= 6 {
+                self.zone_samples.push(r);
+                if self.zone_samples.len() > 12 {
+                    self.zone_samples.remove(0);
+                }
+                learned = true;
+            }
             self.next_id += 1;
             let id = self.next_id;
             tracing::debug!(target: "dialogue", "авто: {t}");
             self.active.push(Active { id, src: t.clone(), missed: 0 });
             started.push(AutoLine { id, rect: r, source: t.clone(), speaker: None, translation: String::new(), pending: true });
             tokio::spawn(translate_line(shared.clone(), tr.clone(), id, t));
+        }
+        if learned {
+            self.learn_zone(shared);
         }
         let alive: Vec<u64> = self.active.iter().map(|a| a.id).collect();
         shared.ui(|u| {

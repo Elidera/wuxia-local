@@ -5,7 +5,6 @@ use crate::capture::{self, PxRect};
 use crate::ocr::Ocr;
 use crate::state::{InterfaceItem, InterfaceView, Shared};
 use crate::translate::{Opts, Translator};
-use crate::win;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -61,8 +60,8 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     }
     let gen = shared.interface_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let cfg = shared.cfg();
-    let screen = win::screen_size();
-    let full = PxRect { x: 0, y: 0, w: screen.0, h: screen.1 };
+    // The game's own picture when it is in front (no taskbar or other windows).
+    let full: PxRect = capture::game_area(&cfg);
     // Game menus open with an animation (labels slide and grow): a picture taken
     // mid-animation gives boxes smaller than the final text, and the original
     // then shows around the translation. Wait until two pictures 250 ms apart
@@ -84,7 +83,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         }
         tracing::debug!(target: "interface", "экран ещё меняется ({d:.3}), жду");
     }
-    let up = upscale_for(cfg.interface.upscale, screen.1);
+    let up = upscale_for(cfg.interface.upscale, full.h);
     shared.ui(|u| u.interface = Some(InterfaceView { items: vec![], pending: 1, generation: gen }));
     let t0 = Instant::now();
     let lang = cfg.source_lang();
@@ -109,7 +108,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                 fg: contrast_text(bg),
                 busy: frame.busyness(&l.rect) > 30.0,
                 bg,
-                rect: l.rect,
+                rect: l.rect.offset(full.x as f32, full.y as f32), // to screen coordinates
                 src: tr.fix_ocr(&l.text),
                 dst: None,
             }
