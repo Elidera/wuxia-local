@@ -1039,6 +1039,7 @@ pub fn spawn(shared: Arc<Shared>) {
         let mut applied_visibility: Option<bool> = None;
         let mut affinity_failed: Option<(bool, Instant)> = None;
         let mut over_notice = false;
+        let mut affinity_failures = 0u32;
         let mut last: Option<(Vec<El>, (i32, i32), String)> = None;
         let mut last_raise = Instant::now();
         let mut last_live = Instant::now();
@@ -1060,6 +1061,7 @@ pub fn spawn(shared: Arc<Shared>) {
                     Ok(()) => {
                         tracing::info!("оверлей: видимость на скриншотах = {want}");
                         affinity_failed = None;
+                        affinity_failures = 0;
                         w.excluded = !want;
                         *shared.overlay_in_capture.lock().unwrap() = Some(want);
                     }
@@ -1068,6 +1070,7 @@ pub fn spawn(shared: Arc<Shared>) {
                             tracing::info!("оверлей: видимость на скриншотах не изменена ({e})");
                         }
                         affinity_failed = Some((want, Instant::now()));
+                        affinity_failures += 1;
                         w.excluded = false;
                         *shared.overlay_in_capture.lock().unwrap() = Some(true);
                     }
@@ -1075,7 +1078,8 @@ pub fn spawn(shared: Arc<Shared>) {
                 applied_visibility = Some(want);
                 last = None; // compose again with / without the game picture
             }
-            if cfg.dialogue.position == "over" && !w.excluded && affinity_failed.is_some() && !over_notice {
+            // Not before a retry with the window on screen has failed too.
+            if cfg.dialogue.position == "over" && !w.excluded && affinity_failures >= 2 && !over_notice {
                 over_notice = true;
                 shared.ui(|u| u.notice("На этом ПК Windows не даёт спрятать окно перевода от захвата экрана, поэтому перевод показан под текстом игры, а не вместо него."));
             }
