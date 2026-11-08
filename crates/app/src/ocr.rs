@@ -216,7 +216,7 @@ fn recognize(engine: &OcrEngine, frame: &Frame, scale: f32, lang: Lang) -> Resul
 pub fn subtitle_text(mut lines: Vec<OcrLine>, lang: Lang) -> String {
     lines.sort_by(|a, b| a.rect.y.partial_cmp(&b.rect.y).unwrap_or(std::cmp::Ordering::Equal));
     let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).filter(|t| lang::is_label(t, lang)).collect();
-    if lang == Lang::En && texts.len() >= 2 && text::looks_like_name_en(texts[0]) && texts[0].split_whitespace().count() <= 3 {
+    if lang == Lang::En && texts.len() >= 2 && text::looks_like_speaker_en(texts[0]) && texts[0].split_whitespace().count() <= 3 {
         let body = text::join_lines_en(&texts[1..]);
         if !body.is_empty() && lang::sentence_like_en(&body) {
             return format!("{}: {body}", texts[0]);

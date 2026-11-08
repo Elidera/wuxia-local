@@ -95,7 +95,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let ocr_ms = t0.elapsed().as_millis();
     let items: Vec<InterfaceItem> = lines
         .into_iter()
-        .filter(|l| wuxia_core::lang::is_label(&l.text, lang))
+        .filter(|l| wuxia_core::lang::is_label(&l.text, lang) && !tr.should_skip(&l.text))
         .take(cfg.interface.max_lines)
         .map(|l| {
             let bg = frame.ring_color(&l.rect);

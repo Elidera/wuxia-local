@@ -2,7 +2,9 @@
 //!
 //! TSV lines: `stage<TAB>from<TAB>to`
 //! * `ocr` — fix a typical recognition error before translation (`ocr	未	末`);
-//! * `ru`  — replace in the Russian output (`ru	Цзянху	цзянху`).
+//! * `ru`  — replace in the Russian output (`ru	Цзянху	цзянху`);
+//! * `skip` — never translate text containing this (`skip	User ID`), like the
+//!   "ignore phrases" of other screen translators. Case-insensitive.
 //! Longer patterns are applied first. `#` starts a comment.
 
 use crate::tsv;
@@ -11,6 +13,7 @@ use crate::tsv;
 pub struct Fixes {
     ocr: Vec<(String, String)>,
     ru: Vec<(String, String)>,
+    skip: Vec<String>,
 }
 
 impl Fixes {
@@ -19,7 +22,7 @@ impl Fixes {
     }
 
     pub fn len(&self) -> usize {
-        self.ocr.len() + self.ru.len()
+        self.ocr.len() + self.ru.len() + self.skip.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -29,6 +32,11 @@ impl Fixes {
     pub fn load_tsv(&mut self, content: &str) -> usize {
         let mut n = 0;
         for row in tsv::parse(content) {
+            if row.len() >= 2 && row[0].trim().eq_ignore_ascii_case("skip") && !row[1].trim().is_empty() {
+                self.skip.push(row[1].trim().to_lowercase());
+                n += 1;
+                continue;
+            }
             if row.len() < 3 || row[1].is_empty() {
                 continue;
             }
@@ -62,6 +70,15 @@ impl Fixes {
     pub fn apply_ru(&self, s: &str) -> String {
         Self::apply(&self.ru, s)
     }
+
+    /// Text the user asked never to translate.
+    pub fn should_skip(&self, s: &str) -> bool {
+        if self.skip.is_empty() {
+            return false;
+        }
+        let l = s.to_lowercase();
+        self.skip.iter().any(|p| l.contains(p.as_str()))
+    }
 }
 
 #[cfg(test)]
@@ -74,5 +91,9 @@ mod tests {
         assert_eq!(n, 3);
         assert_eq!(f.apply_ocr("末来末"), "未来未");
         assert_eq!(f.apply_ru("Цзянху опасен"), "цзянху опасен");
+        let mut g = Fixes::new();
+        assert_eq!(g.load_tsv("skip\tUser ID\n"), 1);
+        assert!(g.should_skip("user id: 600024690"));
+        assert!(!g.should_skip("Langsheng"));
     }
 }

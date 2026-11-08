@@ -75,7 +75,7 @@ impl AutoState {
         for (bi, idx) in blocks.iter().enumerate() {
             let block: Vec<ocr::OcrLine> = idx.iter().map(|&i| lines[i].clone()).collect();
             let t = tr.fix_ocr(&ocr::subtitle_text(block, lang));
-            if !lang::is_subtitle(&t, lang) {
+            if !lang::is_subtitle(&t, lang) || tr.should_skip(&t) {
                 continue;
             }
             let r = brects[bi];
@@ -92,7 +92,7 @@ impl AutoState {
                 let centred = ((sr.x + sr.w / 2.0) - (r.x + r.w / 2.0)).abs() < r.w / 2.0;
                 let name = lines[sidx[0]].text.trim();
                 let ok = gap >= -2.0 && gap < 2.5 * line_h && centred && match lang {
-                    lang::Lang::En => text::looks_like_name_en(name) && name.split_whitespace().count() <= 3,
+                    lang::Lang::En => text::looks_like_speaker_en(name) && name.split_whitespace().count() <= 3,
                     lang::Lang::Zh => (1..=6).contains(&text::han_count(name)) && text::han_ratio(name) > 0.8,
                 };
                 ok.then(|| name.to_string())
@@ -163,7 +163,7 @@ async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, id: u64, full:
     let preset = cfg.active_model().clone();
     let (speaker, body) = if cfg.dialogue.split_speaker {
         let (s, b) = text::split_speaker(&full);
-        (s.map(str::to_string), b.to_string())
+        (s.map(|s| tr.canonical_name(s)), b.to_string())
     } else {
         (None, full.clone())
     };

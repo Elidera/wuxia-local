@@ -215,6 +215,29 @@ pub fn looks_like_name_en(s: &str) -> bool {
     }) && words[0].chars().next().map_or(false, |c| c.is_uppercase())
 }
 
+/// A speaker name line above English dialogue. Like [`looks_like_name_en`], but
+/// tolerates OCR breaking a name in two ("Lang heng" for "Langsheng"): two words,
+/// the first capitalised, short.
+pub fn looks_like_speaker_en(s: &str) -> bool {
+    if looks_like_name_en(s) {
+        return true;
+    }
+    let s = s.trim();
+    let words: Vec<&str> = s.split_whitespace().collect();
+    // "Remember this:", "Listen up:" are speech, not names.
+    const COMMON: &[&str] = &[
+        "this", "that", "these", "those", "it", "its", "me", "you", "your", "him", "her", "them", "us", "our", "now", "then",
+        "here", "there", "is", "was", "are", "were", "the", "and", "but", "what", "why", "how", "who", "not", "all", "one",
+        "out", "off", "up", "down", "too", "yes", "well", "please", "again", "first", "next", "last", "said", "says", "see",
+    ];
+    words.len() == 2
+        && !COMMON.contains(&words[1].to_lowercase().as_str())
+        && s.chars().count() <= 16
+        && words[0].chars().next().map_or(false, |c| c.is_uppercase())
+        && words[1].chars().count() >= 3
+        && s.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-' || c == '\'')
+}
+
 /// Join several OCR lines of one subtitle block.
 /// Chinese lines are concatenated without a separator; Latin ones with a space.
 pub fn join_lines<S: AsRef<str>>(lines: &[S]) -> String {
@@ -257,7 +280,7 @@ pub fn split_speaker(s: &str) -> (Option<&str>, &str) {
             let ok = if has_han(name) {
                 (1..=8).contains(&n) && !name.chars().any(|c| is_cjk_punct(c) || c.is_ascii_punctuation())
             } else {
-                looks_like_name_en(name)
+                looks_like_speaker_en(name)
             };
             if ok {
                 let rest = s[pos + sep.len_utf8()..].trim_start();
@@ -304,6 +327,15 @@ pub fn tidy_russian(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn speaker_split_by_ocr() {
+        assert!(looks_like_speaker_en("Lang heng"));
+        assert!(looks_like_speaker_en("Black Shores Researcher"));
+        assert!(!looks_like_speaker_en("Thank you for coming"));
+        assert!(!looks_like_speaker_en("Wait, what"));
+        assert_eq!(split_speaker("Lan sheng: Hello there."), (Some("Lan sheng"), "Hello there."));
+    }
+
     use super::*;
 
     #[test]

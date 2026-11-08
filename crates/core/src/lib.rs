@@ -12,6 +12,7 @@ pub mod history;
 pub mod image;
 pub mod lang;
 pub mod layout;
+pub mod memory;
 pub mod prompt;
 pub mod raster;
 pub mod similarity;

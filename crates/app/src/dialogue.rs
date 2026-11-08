@@ -145,7 +145,7 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
                     }
                 });
                 // OCR turns other scripts and icons into garbage: require real text in the game language.
-                if !lang::is_subtitle(&txt, lang) {
+                if !lang::is_subtitle(&txt, lang) || tr.should_skip(&txt) {
                     continue;
                 }
                 let growing = similarity::is_growing(&last_text, &txt);
@@ -170,7 +170,7 @@ async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, seq: u64, full
     let preset = cfg.active_model().clone();
     let (speaker, body) = if cfg.dialogue.split_speaker {
         let (s, b) = text::split_speaker(&full);
-        (s.map(str::to_string), b.to_string())
+        (s.map(|s| tr.canonical_name(s)), b.to_string())
     } else {
         (None, full.clone())
     };

@@ -11,6 +11,7 @@ use wuxia_core::cache::Store;
 use wuxia_core::fixes::Fixes;
 use wuxia_core::glossary::Glossary;
 use wuxia_core::history::History;
+use wuxia_core::memory::{FuzzyMemory, NameBook};
 use wuxia_core::prompt::{self, PromptInput, PromptStyle, Reject, TextKind};
 
 pub struct Translator {
@@ -21,6 +22,11 @@ pub struct Translator {
     cache: Mutex<Store>,
     corrections: Mutex<Store>,
     history: Mutex<History>,
+    /// Recent dialogue translations found by similarity (OCR reads a line a bit
+    /// differently each time; without this it was translated again and again).
+    fuzzy: Mutex<FuzzyMemory>,
+    /// All OCR spellings of a speaker name → one.
+    names: Mutex<NameBook>,
     /// llama-server runs with one slot: serialize requests, dialogue first.
     gate: tokio::sync::Mutex<()>,
 }
@@ -132,7 +138,9 @@ impl Translator {
                  # ru  — заменить в русском переводе\n\
                  # Примеры (уберите # в начале строки, чтобы включить):\n\
                  # ocr\t末来\t未来\n\
-                 # ru\tЦзянху\tцзянху\n",
+                 # ru\tЦзянху\tцзянху\n\
+                 # skip — никогда не переводить текст, где это встречается:\n\
+                 # skip\tUser ID\n",
             );
         }
         let fixes = load_fixes(&paths);
@@ -146,6 +154,8 @@ impl Translator {
             cache: Mutex::new(cache),
             corrections: Mutex::new(corrections),
             history: Mutex::new(History::new(context_lines)),
+            fuzzy: Mutex::new(FuzzyMemory::new(400, 0.9)),
+            names: Mutex::new(NameBook::new()),
             gate: tokio::sync::Mutex::new(()),
         }
     }
@@ -167,6 +177,16 @@ impl Translator {
     /// Fix typical OCR errors before translation (fixes.tsv, stage `ocr`).
     pub fn fix_ocr(&self, s: &str) -> String {
         self.fixes.lock().unwrap().apply_ocr(s)
+    }
+
+    /// The user's `skip` rules (fixes.tsv): never translate such text.
+    pub fn should_skip(&self, s: &str) -> bool {
+        self.fixes.lock().unwrap().should_skip(s)
+    }
+
+    /// One spelling per speaker name, whatever OCR read this time.
+    pub fn canonical_name(&self, s: &str) -> String {
+        self.names.lock().unwrap().canonical(s)
     }
 
     fn fix_ru(&self, s: &str) -> String {
@@ -226,10 +246,20 @@ impl Translator {
         }
         if opts.use_cache {
             if let Some(hit) = self.lookup(&preset.id, src, kind) {
-                if kind == TextKind::Dialogue && opts.use_history {
-                    self.history.lock().unwrap().push(src, &hit);
+                if kind == TextKind::Dialogue {
+                    self.fuzzy.lock().unwrap().remember(src, &hit);
+                    if opts.use_history {
+                        self.history.lock().unwrap().push(src, &hit);
+                    }
                 }
                 return Ok(Output { text: hit, cached: true, ms: t0.elapsed().as_millis() });
+            }
+            if kind == TextKind::Dialogue {
+                let near = self.fuzzy.lock().unwrap().find(src).map(str::to_string);
+                if let Some(hit) = near {
+                    tracing::debug!(target: "translate", "похожая реплика уже переведена: {src}");
+                    return Ok(Output { text: hit, cached: true, ms: t0.elapsed().as_millis() });
+                }
             }
         }
 
@@ -289,8 +319,11 @@ impl Translator {
             append(&self.paths.cache(), &line);
         }
         let text = self.fix_ru(&text);
-        if kind == TextKind::Dialogue && opts.use_history {
-            self.history.lock().unwrap().push(src, &text);
+        if kind == TextKind::Dialogue {
+            self.fuzzy.lock().unwrap().remember(src, &text);
+            if opts.use_history {
+                self.history.lock().unwrap().push(src, &text);
+            }
         }
         Ok(Output { text, cached: false, ms })
     }
