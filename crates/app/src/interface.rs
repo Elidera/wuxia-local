@@ -49,13 +49,27 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let cfg = shared.cfg();
     let screen = win::screen_size();
     let full = PxRect { x: 0, y: 0, w: screen.0, h: screen.1 };
-    let frame = match capture::capture_clean(&shared, full) {
+    // Game menus open with an animation (labels slide and grow): a picture taken
+    // mid-animation gives boxes smaller than the final text, and the original
+    // then shows around the translation. Wait until two pictures 250 ms apart
+    // match (at most ~1.5 s).
+    let mut frame = match capture::capture_clean(&shared, full) {
         Ok(f) => f,
         Err(e) => {
             shared.ui(|u| u.notice(format!("Захват экрана: {e}")));
             return;
         }
     };
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let Ok(next) = capture::capture_clean(&shared, full) else { break };
+        let d = coarse_diff(&coarse(&frame), &coarse(&next));
+        frame = next;
+        if d < 0.012 {
+            break;
+        }
+        tracing::debug!(target: "interface", "экран ещё меняется ({d:.3}), жду");
+    }
     let up = if cfg.interface.upscale == 0 {
         if screen.1 < 1440 {
             2
