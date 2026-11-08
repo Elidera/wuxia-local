@@ -228,7 +228,7 @@ mod app {
         srv: mpsc::UnboundedSender<ServerCmd>,
     ) {
         while let Some(cmd) = rx.recv().await {
-            tracing::debug!("команда: {cmd:?}");
+            tracing::info!("команда: {}", format!("{cmd:?}").chars().take(120).collect::<String>());
             match cmd {
                 Command::ToggleDialogue => {
                     shared.reset_watcher.store(true, Ordering::SeqCst);
@@ -289,15 +289,24 @@ mod app {
                         let mut c = shared.cfg.write().unwrap();
                         c.dialogue.region = r;
                         c.dialogue.region_set = true;
-                        // Picking a region means "watch only here".
-                        c.dialogue.mode = "region".into();
+                        // A strip means "watch only here"; half the screen or more is
+                        // better served by the auto mode (and too big for region mode).
+                        if r[2] * r[3] < 0.5 {
+                            c.dialogue.mode = "region".into();
+                        } else {
+                            c.dialogue.mode = "auto".into();
+                        }
                     }
                     shared.save_config();
                     shared.reset_watcher.store(true, Ordering::SeqCst);
                     shared.ui(|u| {
                         u.selecting_region = false;
                         u.region_shot = None;
-                        u.notice("Область субтитров сохранена. Режим «только область»; вернуть «Авто: весь экран» можно в настройках.");
+                        if r[2] * r[3] < 0.5 {
+                            u.notice("Область субтитров сохранена. Режим «только область»; вернуть «Авто: весь экран» можно в настройках.");
+                        } else {
+                            u.notice("Область почти на весь экран — оставляю режим «Авто: весь экран», он для этого и сделан.");
+                        }
                     });
                     tracing::info!("новая область субтитров: {r:?}");
                 }
@@ -340,6 +349,9 @@ mod app {
                         u.ocr_status = Some(status);
                     });
                     shared.save_config();
+                }
+                Command::TestOverlay => {
+                    shared.ui(|u| u.test_overlay_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(10)));
                 }
                 Command::Quit => {
                     tracing::info!("выход по команде пользователя");

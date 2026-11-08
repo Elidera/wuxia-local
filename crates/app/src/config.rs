@@ -353,6 +353,12 @@ impl Config {
             cfg.models = default_models();
         }
         cfg.apply_profile();
+        // Region mode cannot work with a near-full-screen region (the 3D scene never
+        // settles); such configs come from before the auto mode existed.
+        let r = cfg.dialogue.region;
+        if cfg.dialogue.mode == "region" && r[2] * r[3] >= 0.5 {
+            cfg.dialogue.mode = "auto".into();
+        }
         Ok(cfg)
     }
 

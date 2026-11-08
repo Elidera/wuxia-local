@@ -69,14 +69,42 @@ impl AutoState {
 
         // Blocks of speech-like text.
         let rects: Vec<_> = lines.iter().map(|l| l.rect).collect();
+        let blocks = layout::group_lines(&rects);
+        let brects: Vec<_> = blocks.iter().map(|idx| layout::block_rect(&rects, idx)).collect();
         let mut found: Vec<(String, wuxia_core::image::Rect)> = Vec::new();
-        for idx in layout::group_lines(&rects) {
+        for (bi, idx) in blocks.iter().enumerate() {
             let block: Vec<ocr::OcrLine> = idx.iter().map(|&i| lines[i].clone()).collect();
             let t = tr.fix_ocr(&ocr::subtitle_text(block, lang));
-            if lang::is_subtitle(&t, lang) {
-                found.push((t, layout::block_rect(&rects, &idx)));
+            if !lang::is_subtitle(&t, lang) {
+                continue;
+            }
+            let r = brects[bi];
+            // A speaker name often sits a bit higher above the line (different colour
+            // and size, so it is a separate block): a single short name-like line
+            // centred above the speech within ~2.5 line heights.
+            let speaker = blocks.iter().enumerate().find_map(|(si, sidx)| {
+                if si == bi || sidx.len() != 1 {
+                    return None;
+                }
+                let sr = brects[si];
+                let line_h = rects[idx[0]].h.max(1.0);
+                let gap = r.y - (sr.y + sr.h);
+                let centred = ((sr.x + sr.w / 2.0) - (r.x + r.w / 2.0)).abs() < r.w / 2.0;
+                let name = lines[sidx[0]].text.trim();
+                let ok = gap >= -2.0 && gap < 2.5 * line_h && centred && match lang {
+                    lang::Lang::En => text::looks_like_name_en(name) && name.split_whitespace().count() <= 3,
+                    lang::Lang::Zh => (1..=6).contains(&text::han_count(name)) && text::han_ratio(name) > 0.8,
+                };
+                ok.then(|| name.to_string())
+            });
+            match speaker {
+                Some(name) if !t.contains(':') && !t.contains('：') => {
+                    found.push((format!("{name}: {t}"), r));
+                }
+                _ => found.push((t, r)),
             }
         }
+
         shared.ui(|u| {
             u.stats.add_ocr(ocr_ms);
             if let Some(f) = debug_frame {

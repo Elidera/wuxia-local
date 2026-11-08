@@ -49,6 +49,8 @@ pub enum Command {
     GameChanged,
     /// Exit the program (tray menu or the panel's «Выход»).
     Quit,
+    /// Show a test label over the game for 10 s (is the overlay visible at all?).
+    TestOverlay,
     /// Open a web page in the default browser.
     OpenUrl(String),
     /// The panel was closed with ✕: explain once where the program went.
@@ -174,6 +176,8 @@ pub struct UiState {
     /// Result of the panel's "check translation" field.
     pub test_result: Option<String>,
     pub paused_unfocused: bool,
+    /// Until when the test label is shown over the screen.
+    pub test_overlay_until: Option<std::time::Instant>,
 }
 
 impl UiState {

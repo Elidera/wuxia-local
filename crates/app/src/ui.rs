@@ -160,6 +160,7 @@ impl eframe::App for WuxiaApp {
                 }
             }
         }
+        let test_until = self.shared.ui.lock().unwrap().test_overlay_until;
         let (dialogue, auto_lines, interface, show_original, selecting, panel_open, server, paused, dialogue_on) = {
             let u = self.shared.ui.lock().unwrap();
             (
@@ -205,6 +206,25 @@ impl eframe::App for WuxiaApp {
                     painter.galley(r.min + Vec2::splat(6.0), g, Color32::WHITE);
                     painted.push(r);
                 }
+            }
+        }
+        if let Some(t) = test_until {
+            let left = t.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                self.shared.ui.lock().unwrap().test_overlay_until = None;
+            } else {
+                let g = ctx.fonts(|f| {
+                    f.layout_no_wrap(
+                        format!("Wuxia Local: надпись поверх игры видна ✓  ({} с)", left.as_secs() + 1),
+                        FontId::proportional(30.0),
+                        Color32::from_rgb(255, 225, 160),
+                    )
+                });
+                let r = Rect::from_center_size(ctx.screen_rect().center(), g.size() + Vec2::new(40.0, 28.0));
+                painter.rect_filled(r, Rounding::same(10.0), Color32::from_black_alpha(220));
+                painter.galley(r.min + Vec2::new(20.0, 14.0), g, Color32::WHITE);
+                painted.push(r);
+                ctx.request_repaint_after(Duration::from_millis(200));
             }
         }
         {

@@ -802,6 +802,13 @@ fn page_check(ui: &mut Ui, shared: &Arc<Shared>, test_input: &mut String, ocr_vi
     };
     ui.heading("Проверка");
     ui.add_space(6.0);
+    card(ui, "Видно ли перевод поверх игры", |ui| {
+        hint(ui, "Нажмите кнопку и сразу переключитесь в игру (Alt+Tab). 10 секунд в центре экрана должна гореть надпись. Если её не видно — перевод тоже не будет виден: напишите об этом.");
+        if ui.add(egui::Button::new(RichText::new("Показать надпись поверх игры").color(Color32::BLACK)).fill(GOLD)).clicked() {
+            shared.send(Command::TestOverlay);
+        }
+    });
+    ui.add_space(8.0);
     card(ui, "Перевести текст", |ui| {
         hint(ui, "Вставьте английский или китайский текст — например, из видео или с сайта — и нажмите Enter.");
         let resp = ui.add(egui::TextEdit::multiline(test_input).hint_text("少侠，此去开封，路途遥远……").desired_rows(2).desired_width(f32::INFINITY));
