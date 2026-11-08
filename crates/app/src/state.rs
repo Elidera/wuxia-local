@@ -53,6 +53,8 @@ pub enum Command {
     TestOverlay,
     /// Start / finish moving and resizing the translation window on screen.
     EditBox,
+    /// Save the screen as a new screenshot test case (Ctrl+F9).
+    SaveCase,
     /// Open a web page in the default browser.
     OpenUrl(String),
     /// The panel was closed with ✕: explain once where the program went.

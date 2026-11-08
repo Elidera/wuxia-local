@@ -145,3 +145,5 @@ screen_translate = "F8"
 show_original = "F9"
 select_region = "Ctrl+F7"
 panel = "F10"
+# Сохранить экран как случай для проверки (папка cases в данных программы)
+save_case = "Ctrl+F9"

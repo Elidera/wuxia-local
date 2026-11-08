@@ -37,6 +37,20 @@ fn coarse_diff(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.len() as f32
 }
 
+/// OCR upscale for F8: small fonts below 1440p read much better at 2×.
+pub fn upscale_for(configured: u32, screen_h: i32) -> u32 {
+    match configured {
+        0 if screen_h < 1440 => 2,
+        0 => 1,
+        k => k,
+    }
+}
+
+/// Is this OCR line a label F8 translates? (Shared with `--selftest`.)
+pub fn is_label_line(text: &str, lang: wuxia_core::lang::Lang, tr: &Translator) -> bool {
+    wuxia_core::lang::is_label(text, lang) && !tr.should_skip(text)
+}
+
 pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     // Second press hides the current translation.
     let showing = shared.ui.lock().unwrap().interface.is_some();
@@ -70,15 +84,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         }
         tracing::debug!(target: "interface", "экран ещё меняется ({d:.3}), жду");
     }
-    let up = if cfg.interface.upscale == 0 {
-        if screen.1 < 1440 {
-            2
-        } else {
-            1
-        }
-    } else {
-        cfg.interface.upscale
-    };
+    let up = upscale_for(cfg.interface.upscale, screen.1);
     shared.ui(|u| u.interface = Some(InterfaceView { items: vec![], pending: 1, generation: gen }));
     let t0 = Instant::now();
     let lang = cfg.source_lang();
@@ -95,7 +101,7 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let ocr_ms = t0.elapsed().as_millis();
     let items: Vec<InterfaceItem> = lines
         .into_iter()
-        .filter(|l| wuxia_core::lang::is_label(&l.text, lang) && !tr.should_skip(&l.text))
+        .filter(|l| is_label_line(&l.text, lang, &tr))
         .take(cfg.interface.max_lines)
         .map(|l| {
             let bg = frame.ring_color(&l.rect);

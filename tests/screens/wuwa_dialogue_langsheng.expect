@@ -1,0 +1,10 @@
+# Wuthering Waves, диалог с Langsheng (2560×1440). Внизу — наша старая плашка
+# с русским переводом: её нельзя принимать за английскую реплику.
+lang	en
+speaker	Langsheng
+speech	nothing quite like being on duty in a bustling commercial area
+speech	All that time I spent applying for this job feels worth it
+speech	You volunteered to come here
+absent	User ID
+absent	Ничего не сравнится
+max_speech	3

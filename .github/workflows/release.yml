@@ -81,6 +81,23 @@ jobs:
           Copy-Item -Recurse assets/bench dist/bench
           Copy-Item README.md, LICENSE dist/
 
+      - name: Windows OCR for English (for the screenshot tests)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Get-WindowsCapability -Online -Name "Language.OCR*en-US*" | Format-Table Name, State
+          Get-WindowsCapability -Online -Name "Language.OCR*en-US*" | Where-Object State -ne Installed | Add-WindowsCapability -Online
+
+      - name: Screenshot tests (real Windows OCR on tests/screens)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $p = Start-Process -FilePath dist\wuxia-local.exe -ArgumentList '--selftest','tests\screens','--out','selftest-report.md' -Wait -PassThru
+          Write-Host "exit code $($p.ExitCode)"
+          if (Test-Path selftest-report.md) { Get-Content selftest-report.md }
+          if ($p.ExitCode -eq 2) { Write-Host "::warning::Windows OCR is not available on the runner - screenshot tests skipped"; exit 0 }
+          exit $p.ExitCode
+
       - name: Portable zip
         shell: pwsh
         run: |
@@ -104,6 +121,7 @@ jobs:
           path: |
             installer/Output/*.exe
             WuxiaLocal-portable-x64.zip
+            selftest-report.md
 
       - name: Keep only the 5 newest builds
         if: github.event_name != 'pull_request'

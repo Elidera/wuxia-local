@@ -15,6 +15,7 @@ pub mod layout;
 pub mod memory;
 pub mod prompt;
 pub mod raster;
+pub mod selftest;
 pub mod similarity;
 pub mod text;
 pub mod tsv;

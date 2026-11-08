@@ -31,6 +31,8 @@ mod overlay;
 #[cfg(windows)]
 mod paths;
 #[cfg(windows)]
+mod selftest;
+#[cfg(windows)]
 mod state;
 #[cfg(windows)]
 mod translate;
@@ -107,6 +109,11 @@ mod app {
     }
 
     pub fn run() -> anyhow::Result<()> {
+        // Screenshot tests (CI and the developer): no window, no second-copy check.
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("--selftest") {
+            std::process::exit(crate::selftest::run_cli(&args));
+        }
         // Only one copy: a second launch just brings up the panel of the first one.
         if !win::claim_single_instance() {
             win::signal_show_panel();
@@ -367,6 +374,12 @@ mod app {
                     shared.save_config();
                     tracing::info!("окно перевода: {}", if on { "настройка" } else { "готово" });
                 }
+                Command::SaveCase => match &ocr {
+                    Some(o) => {
+                        tokio::spawn(crate::selftest::save_case(shared.clone(), tr.clone(), o.clone()));
+                    }
+                    None => shared.ui(|u| u.notice("OCR не готов — снимок для теста не сохранить")),
+                },
                 Command::TestOverlay => {
                     shared.ui(|u| u.test_overlay_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(10)));
                 }

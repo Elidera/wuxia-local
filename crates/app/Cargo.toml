@@ -23,6 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+png = "0.17"
 eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
 windows = { version = "0.58", features = [
     "Foundation",

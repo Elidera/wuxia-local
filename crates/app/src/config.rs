@@ -173,6 +173,8 @@ pub struct Hotkeys {
     pub show_original: String,
     pub select_region: String,
     pub panel: String,
+    /// Save the screen as a test case for the developer.
+    pub save_case: String,
 }
 
 impl Default for Config {
@@ -340,6 +342,7 @@ impl Default for Hotkeys {
             show_original: "F9".into(),
             select_region: "Ctrl+F7".into(),
             panel: "F10".into(),
+            save_case: "Ctrl+F9".into(),
         }
     }
 }
