@@ -1,0 +1,9 @@
+# Wuthering Waves, диалог с Fuyue (2560×1440), три строки. Чёрные прямоугольники —
+# наши окна, закрашенные при снимке.
+lang	en
+speaker	Fuyue
+speech	And the folks here... despite dealing with all those Tacet Discords and
+speech	they still manage to whip up delicious food and build these
+speech	gorgeous houses
+absent	User ID
+max_speech	1
