@@ -1,0 +1,16 @@
+name: lockfile
+# Prints a freshly resolved Cargo.lock (manual run) — for updating dependencies deliberately.
+on:
+  workflow_dispatch:
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - run: |
+          cargo generate-lockfile
+          echo "----CARGO.LOCK BEGIN----"
+          base64 -w0 Cargo.lock
+          echo
+          echo "----CARGO.LOCK END----"
