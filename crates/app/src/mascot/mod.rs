@@ -96,7 +96,7 @@ pub fn paint(ui: &Ui, rect: Rect, mood: Mood, time: f64) {
             // "…" bubble.
             let c = at(0.93, 0.08);
             let r = img_rect.width() * 0.09;
-            painter.circle(c, r, Color32::from_rgb(252, 244, 236), Stroke::new(1.0, Color32::from_rgb(150, 112, 80)));
+            painter.circle(c, r, Color32::from_rgb(252, 244, 236), Stroke::new(1.0_f32, Color32::from_rgb(150, 112, 80)));
             let n = ((time * 3.0) as usize) % 4;
             painter.text(c, Align2::CENTER_CENTER, &"•••"[..n * '•'.len_utf8()], FontId::proportional(r * 0.9), Color32::from_rgb(150, 112, 80));
         }

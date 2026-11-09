@@ -196,7 +196,7 @@ impl WuxiaApp {
                         Pos2::new(region[0] * s.x, region[1] * s.y),
                         Vec2::new(region[2] * s.x, region[3] * s.y),
                     );
-                    painter.rect_stroke(cur, Rounding::same(2.0), Stroke::new(2.0, Color32::from_rgb(120, 180, 255)));
+                    painter.rect_stroke(cur, Rounding::same(2.0), Stroke::new(2.0_f32, Color32::from_rgb(120, 180, 255)));
                     let help = ctx.fonts(|f| {
                         f.layout(
                             "Обведите мышью область, где появляются субтитры (с запасом по краям).\n\
@@ -235,7 +235,7 @@ impl WuxiaApp {
                         let r = Rect::from_two_pos(a, b);
                         if down || released {
                             painter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(255, 220, 120, 40));
-                            painter.rect_stroke(r, Rounding::ZERO, Stroke::new(2.0, Color32::from_rgb(255, 210, 90)));
+                            painter.rect_stroke(r, Rounding::ZERO, Stroke::new(2.0_f32, Color32::from_rgb(255, 210, 90)));
                         }
                         if released {
                             *drag = None;
@@ -302,7 +302,7 @@ impl WuxiaApp {
                     });
                     for (i, l) in f.lines.iter().enumerate() {
                         let (w, c) = if f.selected == Some(i) {
-                            (2.5, Color32::from_rgb(255, 205, 90))
+                            (2.5_f32, Color32::from_rgb(255, 205, 90))
                         } else if under == Some(i) {
                             (2.0, Color32::from_rgb(255, 230, 160))
                         } else {

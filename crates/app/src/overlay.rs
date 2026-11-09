@@ -930,7 +930,7 @@ impl Window {
         // The game under the window: our window is not in this capture.
         let bg = if self.excluded { crate::capture::capture(crate::capture::PxRect { x: bx, y: by, w: bw, h: bh }).ok().map(|f| f.bgra) } else { None };
         let mut buf = vec![0u8; (bw * bh * 4) as usize];
-        let mut probe: Option<(i32, i32)> = None;
+        let probe: Option<(i32, i32)>;
         {
             let mut cv = Canvas::new(bw, bh, &mut buf);
             for (o, ms) in c.ops.iter().zip(&c.masks) {

@@ -10,6 +10,9 @@ pub struct Config {
     /// The config file was just created (first start): pick a model for this PC.
     #[serde(skip)]
     pub fresh: bool,
+    /// Set when a broken config.toml was replaced on load: shown to the user.
+    #[serde(skip)]
+    pub load_note: Option<String>,
     pub general: General,
     pub llm: Llm,
     pub models: Vec<ModelPreset>,
@@ -201,6 +204,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             fresh: false,
+            load_note: None,
             general: General::default(),
             llm: Llm::default(),
             models: default_models(),
@@ -387,11 +391,39 @@ impl Config {
             }
         }
         let text = std::fs::read_to_string(&p)?;
-        let mut cfg: Config = toml::from_str(&text).map_err(|e| anyhow::anyhow!("Ошибка в {}: {e}", p.display()))?;
+        let mut cfg = match Config::parse(&text) {
+            Ok(c) => c,
+            // A broken file must not stop the program: the last good copy, or the defaults.
+            Err(e) => {
+                let broken = p.with_extension("toml.broken");
+                let _ = std::fs::copy(&p, &broken);
+                tracing::error!("Ошибка в {}: {e}", p.display());
+                let backup = std::fs::read_to_string(backup_path(&p)).ok().and_then(|t| Config::parse(&t).ok());
+                let (mut c, from) = match backup {
+                    Some(c) => (c, "последнюю рабочую копию"),
+                    None => {
+                        let d = std::fs::read_to_string(paths.default_config()).ok().and_then(|t| Config::parse(&t).ok()).unwrap_or_default();
+                        (d, "стандартные настройки")
+                    }
+                };
+                c.save(paths)?;
+                c.load_note = Some(format!(
+                    "Файл настроек был повреждён ({e}). Загружена {from}; испорченный файл сохранён как {}.",
+                    broken.display()
+                ));
+                c
+            }
+        };
+        cfg.fresh = fresh;
+        Ok(cfg)
+    }
+
+    /// Read a config file's text and bring old configs up to date.
+    pub fn parse(text: &str) -> anyhow::Result<Config> {
+        let mut cfg: Config = toml::from_str(text)?;
         if cfg.models.is_empty() {
             cfg.models = default_models();
         }
-        cfg.fresh = fresh;
         cfg.apply_profile();
         // Region mode cannot work with a near-full-screen region (the 3D scene never
         // settles); such configs come from before the auto mode existed.
@@ -402,10 +434,19 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Settings are saved from several threads (panel, overlay drag, the
+    /// subtitle zone finder, the model supervisor): one at a time, through a
+    /// temporary file, keeping the previous good file as `config.toml.bak`.
     pub fn save(&self, paths: &Paths) -> anyhow::Result<()> {
-        let tmp = paths.config().with_extension("toml.tmp");
+        static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+        let p = paths.config();
+        let tmp = p.with_extension("toml.tmp");
         std::fs::write(&tmp, toml::to_string_pretty(self)?)?;
-        std::fs::rename(tmp, paths.config())?;
+        if p.exists() {
+            let _ = std::fs::copy(&p, backup_path(&p));
+        }
+        std::fs::rename(tmp, p)?;
         Ok(())
     }
 
@@ -461,4 +502,8 @@ impl Config {
         let idx = self.models.iter().position(|m| m.id == id).unwrap_or(0);
         &mut self.models[idx]
     }
+}
+
+fn backup_path(p: &std::path::Path) -> std::path::PathBuf {
+    p.with_extension("toml.bak")
 }

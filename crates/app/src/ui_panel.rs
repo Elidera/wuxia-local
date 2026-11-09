@@ -62,7 +62,7 @@ pub fn apply_theme(ctx: &egui::Context) {
     v.override_text_color = Some(TEXT);
     v.hyperlink_color = GOLD;
     v.selection.bg_fill = Color32::from_rgb(110, 84, 44);
-    v.selection.stroke = Stroke::new(1.0, GOLD);
+    v.selection.stroke = Stroke::new(1.0_f32, GOLD);
     v.window_rounding = Rounding::same(10.0);
     let r = Rounding::same(7.0);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
@@ -70,12 +70,12 @@ pub fn apply_theme(ctx: &egui::Context) {
     }
     v.widgets.noninteractive.bg_fill = CARD;
     v.widgets.noninteractive.weak_bg_fill = CARD;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(44, 48, 58));
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(44, 48, 58));
     v.widgets.inactive.bg_fill = CARD_HI;
     v.widgets.inactive.weak_bg_fill = CARD_HI;
     v.widgets.hovered.bg_fill = Color32::from_rgb(52, 57, 69);
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(52, 57, 69);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, GOLD);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, GOLD);
     v.widgets.active.bg_fill = Color32::from_rgb(120, 92, 48);
     v.widgets.active.weak_bg_fill = Color32::from_rgb(120, 92, 48);
     style.visuals = v;
@@ -100,7 +100,7 @@ fn card<R>(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     egui::Frame::none()
         .fill(CARD)
         .rounding(Rounding::same(10.0))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(42, 46, 56)))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(42, 46, 56)))
         .inner_margin(Margin::same(14.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -124,7 +124,7 @@ fn key_chip(ui: &mut Ui, key: &str) {
     egui::Frame::none()
         .fill(Color32::from_rgb(14, 15, 19))
         .rounding(Rounding::same(4.0))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(70, 74, 84)))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(70, 74, 84)))
         .inner_margin(Margin::symmetric(6.0, 1.0))
         .show(ui, |ui| {
             ui.label(RichText::new(key).monospace().size(12.0).color(WEAK));
@@ -239,7 +239,7 @@ fn segmented(ui: &mut Ui, value: &mut String, options: &[(&str, &str)]) -> bool 
 
 fn big_action(ui: &mut Ui, title: &str, subtitle: &str, key: &str, active: bool, width: f32) -> bool {
     let fill = if active { Color32::from_rgb(64, 52, 30) } else { CARD_HI };
-    let stroke = if active { Stroke::new(1.5, GOLD) } else { Stroke::new(1.0, Color32::from_rgb(52, 56, 66)) };
+    let stroke = if active { Stroke::new(1.5_f32, GOLD) } else { Stroke::new(1.0_f32, Color32::from_rgb(52, 56, 66)) };
     let resp = egui::Frame::none()
         .fill(fill)
         .stroke(stroke)
@@ -271,7 +271,7 @@ fn big_action(ui: &mut Ui, title: &str, subtitle: &str, key: &str, active: bool,
 fn status_pill(ui: &mut Ui, text: &str, color: Color32) {
     egui::Frame::none()
         .fill(color.gamma_multiply(0.18))
-        .stroke(Stroke::new(1.0, color))
+        .stroke(Stroke::new(1.0_f32, color))
         .rounding(Rounding::same(12.0))
         .inner_margin(Margin::symmetric(10.0, 3.0))
         .show(ui, |ui| {
@@ -322,7 +322,7 @@ pub fn panel_ui(ctx: &egui::Context, shared: &Arc<Shared>, st: &mut PanelState, 
                 let text = RichText::new(format!("{icon}  {label}")).size(15.5).color(if selected { GOLD } else { TEXT });
                 let b = egui::Button::new(text)
                     .fill(if selected { Color32::from_rgb(40, 36, 28) } else { Color32::TRANSPARENT })
-                    .stroke(if selected { Stroke::new(1.0, Color32::from_rgb(110, 86, 48)) } else { Stroke::NONE })
+                    .stroke(if selected { Stroke::new(1.0_f32, Color32::from_rgb(110, 86, 48)) } else { Stroke::NONE })
                     .rounding(Rounding::same(8.0))
                     .min_size(vec2(130.0, 34.0));
                 if ui.add(b).clicked() {
@@ -688,7 +688,7 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         dirty |= setting_row(ui, "Размер шрифта", "", |ui| ui.add(egui::Slider::new(&mut d.font_size, 14.0..=56.0).suffix(" пт")).changed());
         dirty |= setting_row(ui, "Шрифт перевода", "Любой шрифт Windows", |ui| {
             let mut changed = false;
-            egui::ComboBox::from_id_source("overlay_font").selected_text(d.overlay_font.clone()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("overlay_font").selected_text(d.overlay_font.clone()).show_ui(ui, |ui| {
                 for f in ["Segoe UI", "Arial", "Tahoma", "Verdana", "Calibri", "Trebuchet MS", "Georgia", "Times New Roman", "Palatino Linotype", "Comic Sans MS"] {
                     changed |= ui.selectable_value(&mut d.overlay_font, f.to_string(), f).changed();
                 }

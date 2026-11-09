@@ -173,6 +173,9 @@ mod app {
         if let Some(msg) = first_notice {
             shared.ui(|u| u.notice(msg));
         }
+        if let Some(msg) = cfg.load_note.clone() {
+            shared.ui(|u| u.notice(msg));
+        }
 
         // Hotkeys.
         let problems = hotkeys::spawn(&cfg.hotkeys, cmd_tx.clone());

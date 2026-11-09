@@ -1,0 +1,6 @@
+/target
+/dist
+/dl
+/installer/Output
+*.zip
+selftest-report.md

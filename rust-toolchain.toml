@@ -1,0 +1,6 @@
+# The exact compiler for local builds and CI: a new Rust release cannot break
+# the build unnoticed (update deliberately, together with Cargo.lock).
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

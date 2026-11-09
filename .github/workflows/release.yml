@@ -22,24 +22,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - run: cargo test -p wuxia-core
 
   windows:
     runs-on: windows-latest
     needs: core-tests
     env:
-      LLAMA_TAG: ${{ github.event.inputs.llama_tag }}
       GH_TOKEN: ${{ github.token }}
       # ocr-rs generates its MNN bindings with bindgen (needs libclang).
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       OCR_RS_TAG: v2.4.1
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+
+      - name: Pinned downloads (MNN for PaddleOCR)
+        shell: pwsh
+        run: |
+          # ci/pins.env → environment for the next steps.
+          Get-Content ci/pins.env | Where-Object { $_ -match '^[A-Z_0-9]+=' } | ForEach-Object { $_ | Out-File -Append -Encoding utf8 $env:GITHUB_ENV }
+          $pins = @{}; Get-Content ci/pins.env | Where-Object { $_ -match '^([A-Z_0-9]+)=(.*)$' } | ForEach-Object { $pins[$Matches[1]] = $Matches[2].Trim() }
+          # ocr-rs takes MNN from a release that can be replaced at any time: compare its digest.
+          $q = '.assets[] | select(.name == "' + $pins.MNN_ASSET + '") | .digest'
+          $digest = gh api repos/zibo-chen/MNN-Prebuilds/releases/tags/dev --jq $q
+          $sha = "$digest".Replace('sha256:', '')
+          Write-Host "MNN $($pins.MNN_ASSET): $sha"
+          if ([string]::IsNullOrEmpty($sha)) { Write-Host "::warning::MNN asset $($pins.MNN_ASSET) not found in the release metadata" }
+          elseif ([string]::IsNullOrEmpty($pins.MNN_SHA256)) { Write-Host "::warning::MNN_SHA256 is not pinned yet; current: $sha" }
+          elseif ($sha -ne $pins.MNN_SHA256) { throw "MNN prebuilt changed upstream ($sha, pinned $($pins.MNN_SHA256)). Check it, then update ci/pins.env." }
 
       - name: Test core
         run: cargo test -p wuxia-core
@@ -58,13 +72,22 @@ jobs:
       - name: Download llama.cpp (Vulkan + CPU)
         shell: pwsh
         run: |
-          $tag = $env:LLAMA_TAG
-          # Newest regular build (tags like b12017); the repo's "latest" may be a release without Windows binaries.
-          if ([string]::IsNullOrEmpty($tag)) { $tag = (gh api "repos/ggml-org/llama.cpp/releases?per_page=30" --jq '[.[] | select(.tag_name | test("^b[0-9]+$"))][0].tag_name') }
+          # The input (manual run) wins; otherwise the version pinned in ci/pins.env.
+          $tag = "${{ github.event.inputs.llama_tag }}"
+          $pinned = [string]::IsNullOrEmpty($tag)
+          if ($pinned) { $tag = $env:LLAMA_TAG }
           Write-Host "llama.cpp $tag"
           New-Item -ItemType Directory -Force dist/llama-vulkan, dist/llama-cpu | Out-Null
           gh release download $tag --repo ggml-org/llama.cpp --pattern "*bin-win-vulkan-x64.zip" --dir dl
           gh release download $tag --repo ggml-org/llama.cpp --pattern "*bin-win-cpu-x64.zip" --dir dl
+          if ($pinned) {
+            foreach ($k in @(@("vulkan", $env:LLAMA_VULKAN_SHA256), @("cpu", $env:LLAMA_CPU_SHA256))) {
+              $sha = (Get-FileHash (Get-ChildItem "dl/*bin-win-$($k[0])-x64.zip").FullName -Algorithm SHA256).Hash.ToLower()
+              Write-Host "llama.cpp $($k[0]): $sha"
+              if ([string]::IsNullOrEmpty($k[1])) { Write-Host "::warning::llama.cpp $($k[0]) checksum is not pinned yet; current: $sha" }
+              elseif ($sha -ne $k[1].ToLower()) { throw "llama.cpp $tag $($k[0]) archive differs from ci/pins.env ($sha)" }
+            }
+          }
           Expand-Archive (Get-ChildItem dl/*vulkan-x64.zip).FullName -DestinationPath dist/llama-vulkan
           Expand-Archive (Get-ChildItem dl/*cpu-x64.zip).FullName -DestinationPath dist/llama-cpu
           # Some releases nest binaries in a subfolder: flatten.
@@ -131,6 +154,13 @@ jobs:
           $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" "/DDist=$PWD\dist" installer\wuxia-local.iss
           Get-ChildItem installer/Output
+
+      - name: Cargo.lock (exact dependency versions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          retention-days: 3
 
       - uses: actions/upload-artifact@v4
         with:
