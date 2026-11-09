@@ -40,12 +40,25 @@ pub async fn run(shared: Arc<Shared>) -> Result<PathBuf> {
     let glossary = crate::translate::load_glossary(&shared.paths, &shared.cfg().general.profile);
     let progress = |s: String| shared.ui(|u| u.bench_progress = Some(s));
 
+    let hw = shared.ui.lock().unwrap().hw.clone();
     let mut results: Vec<(String, Vec<Row>, String)> = Vec::new();
     for preset in &cfg.models {
-        progress(format!("Бенчмарк: {} — запуск…", preset.name));
         let reuse = preset.id == cfg.llm.active_model
             && shared.ui.lock().unwrap().server.as_ref().map_or(false, |s| s.is_ready());
         let mut bench_cfg: Config = cfg.clone();
+        // The game's own model keeps running meanwhile: a model that cannot fit
+        // in this PC's memory is not even started, and one that does not fit in
+        // video memory is compared on the processor.
+        let fit = if reuse || cfg.llm.mode == "external" { wuxia_core::hwfit::Fit::Gpu } else { crate::hw::fit(&cfg, preset, &hw) };
+        if fit == wuxia_core::hwfit::Fit::TooBig {
+            results.push((preset.name.clone(), vec![], "пропущена: не хватит памяти этого компьютера".into()));
+            continue;
+        }
+        let on_cpu = fit == wuxia_core::hwfit::Fit::Cpu && bench_cfg.llm.gpu_layers > 0;
+        if on_cpu {
+            bench_cfg.llm.gpu_layers = 0;
+        }
+        progress(format!("Бенчмарк: {} — запуск{}…", preset.name, if on_cpu { " на процессоре" } else { "" }));
         let (client, mut child) = if reuse || cfg.llm.mode == "external" {
             (LlmClient::new(&server::base_url(&cfg), cfg.llm.request_timeout_s), None)
         } else {
@@ -98,7 +111,8 @@ pub async fn run(shared: Arc<Shared>) -> Result<PathBuf> {
         let ok: Vec<&Row> = rows.iter().filter(|r| r.ms > 0).collect();
         let avg = if ok.is_empty() { 0 } else { ok.iter().map(|r| r.ms).sum::<u128>() / ok.len() as u128 };
         let misses: usize = rows.iter().map(|r| r.misses).sum();
-        results.push((preset.name.clone(), rows, format!("среднее {avg} мс, нарушений глоссария: {misses}")));
+        let place = if on_cpu { " (на процессоре: в видеопамять не помещается)" } else { "" };
+        results.push((preset.name.clone(), rows, format!("среднее {avg} мс, нарушений глоссария: {misses}{place}")));
     }
 
     // Markdown report.

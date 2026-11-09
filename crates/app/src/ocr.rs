@@ -51,13 +51,6 @@ impl Engine {
             _ => Engine::Paddle,
         }
     }
-    pub fn code(self) -> &'static str {
-        match self {
-            Engine::Windows => "windows",
-            Engine::Paddle => "paddle",
-            Engine::Both => "both",
-        }
-    }
     pub fn name_ru(self) -> &'static str {
         match self {
             Engine::Windows => "Windows OCR",

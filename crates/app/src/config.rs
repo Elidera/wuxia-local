@@ -406,6 +406,9 @@ impl Config {
                         (d, "стандартные настройки")
                     }
                 };
+                // The broken file is kept as .broken; removed first so that saving
+                // does not make it the backup (the good copy stays in .bak).
+                let _ = std::fs::remove_file(&p);
                 c.save(paths)?;
                 c.load_note = Some(format!(
                     "Файл настроек был повреждён ({e}). Загружена {from}; испорченный файл сохранён как {}.",
@@ -496,14 +499,84 @@ impl Config {
             self.active_model().id.clone()
         }
     }
-
-    pub fn active_model_mut(&mut self) -> &mut ModelPreset {
-        let id = self.llm.active_model.clone();
-        let idx = self.models.iter().position(|m| m.id == id).unwrap_or(0);
-        &mut self.models[idx]
-    }
 }
 
 fn backup_path(p: &std::path::Path) -> std::path::PathBuf {
     p.with_extension("toml.bak")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_paths(name: &str) -> Paths {
+        let dir = std::env::temp_dir().join(format!("wuxia-cfg-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Paths { install: dir.clone(), data: dir }
+    }
+
+    #[test]
+    fn bundled_default_config_parses() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config.default.toml")).unwrap();
+        let c = Config::parse(&text).unwrap();
+        assert!(!c.models.is_empty());
+        assert!(c.models.iter().any(|m| m.id == c.llm.active_model), "active model {} has no preset", c.llm.active_model);
+    }
+
+    #[test]
+    fn partial_config_gets_defaults() {
+        let c = Config::parse("[dialogue]\nfont_size = 30.0\n").unwrap();
+        assert_eq!(c.dialogue.font_size, 30.0);
+        assert!(!c.models.is_empty());
+        assert_eq!(c.ocr.engine, Config::default().ocr.engine);
+    }
+
+    #[test]
+    fn old_full_screen_region_becomes_auto() {
+        let c = Config::parse("[dialogue]\nmode = \"region\"\nregion = [0.0, 0.0, 1.0, 1.0]\n").unwrap();
+        assert_eq!(c.dialogue.mode, "auto");
+    }
+
+    #[test]
+    fn save_keeps_previous_as_backup() {
+        let paths = temp_paths("save");
+        let mut c = Config::default();
+        c.dialogue.font_size = 20.0;
+        c.save(&paths).unwrap();
+        c.dialogue.font_size = 40.0;
+        c.save(&paths).unwrap();
+        let now = Config::parse(&std::fs::read_to_string(paths.config()).unwrap()).unwrap();
+        let bak = Config::parse(&std::fs::read_to_string(backup_path(&paths.config())).unwrap()).unwrap();
+        assert_eq!(now.dialogue.font_size, 40.0);
+        assert_eq!(bak.dialogue.font_size, 20.0);
+    }
+
+    #[test]
+    fn broken_file_falls_back_to_backup_and_keeps_it() {
+        let paths = temp_paths("broken");
+        let mut c = Config::default();
+        c.dialogue.font_size = 33.0;
+        c.save(&paths).unwrap();
+        c.save(&paths).unwrap(); // now config.toml.bak is a good copy too
+        std::fs::write(paths.config(), "[dialogue\nfont_size = ").unwrap();
+        let loaded = Config::load(&paths).unwrap();
+        assert_eq!(loaded.dialogue.font_size, 33.0);
+        assert!(loaded.load_note.is_some());
+        assert!(paths.config().with_extension("toml.broken").exists());
+        // Broken twice in a row: the good copy is still there.
+        std::fs::write(paths.config(), "garbage = = =").unwrap();
+        let again = Config::load(&paths).unwrap();
+        assert_eq!(again.dialogue.font_size, 33.0);
+    }
+
+    #[test]
+    fn broken_file_without_backup_gives_defaults() {
+        let paths = temp_paths("nobak");
+        std::fs::write(paths.config(), "not toml at all [[[").unwrap();
+        let loaded = Config::load(&paths).unwrap();
+        assert!(loaded.load_note.is_some());
+        assert_eq!(loaded.dialogue.font_size, Config::default().dialogue.font_size);
+        assert!(!loaded.fresh);
+    }
 }

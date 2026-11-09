@@ -1042,6 +1042,9 @@ pub fn spawn(shared: Arc<Shared>) {
         let mut last: Option<(Vec<El>, (i32, i32), String)> = None;
         let mut last_raise = Instant::now();
         let mut last_live = Instant::now();
+        // Drawing time (for the log): is the overlay a load on this PC?
+        let (mut frames, mut frame_total, mut frame_max) = (0u32, Duration::ZERO, Duration::ZERO);
+        let mut last_frame_log = Instant::now();
         loop {
             unsafe {
                 let mut msg = MSG::default();
@@ -1091,6 +1094,7 @@ pub fn spawn(shared: Arc<Shared>) {
             w.set_interactive(editing);
             let face = cfg.dialogue.overlay_font.clone();
             let mut probe_now: Option<Option<(i32, i32)>> = None;
+            let t_frame = Instant::now();
             if last.as_ref().map_or(true, |(e, s, f)| *e != els || *s != screen || *f != face) {
                 let (rects, probe) = w.render(&els, screen, &face);
                 *shared.overlay_px.lock().unwrap() = rects;
@@ -1101,6 +1105,24 @@ pub fn spawn(shared: Arc<Shared>) {
                 // The game moves under translucent plates and erased text: ~10 times a second.
                 probe_now = Some(w.present());
                 last_live = Instant::now();
+            }
+            if probe_now.is_some() {
+                let el = t_frame.elapsed();
+                frames += 1;
+                frame_total += el;
+                frame_max = frame_max.max(el);
+            }
+            if last_frame_log.elapsed() >= Duration::from_secs(60) {
+                if frames > 0 {
+                    tracing::info!(
+                        "оверлей: {frames} кадров за минуту, в среднем {:.1} мс, максимум {:.1} мс (живой фон: {})",
+                        frame_total.as_secs_f64() * 1000.0 / frames as f64,
+                        frame_max.as_secs_f64() * 1000.0,
+                        w.live()
+                    );
+                }
+                (frames, frame_total, frame_max) = (0, Duration::ZERO, Duration::ZERO);
+                last_frame_log = Instant::now();
             }
             if let Some(probe) = probe_now {
                 let mut p = shared.overlay_probe.lock().unwrap();

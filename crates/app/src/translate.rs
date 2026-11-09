@@ -254,10 +254,6 @@ impl Translator {
         self.fixes.lock().unwrap().apply_ru(s)
     }
 
-    pub fn glossary_len(&self) -> usize {
-        self.glossary.lock().unwrap().len()
-    }
-
     /// «Помнить реплик для контекста» changed: applies at once.
     pub fn set_context_lines(&self, n: usize) {
         let mut h = self.history.lock().unwrap();

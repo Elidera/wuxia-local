@@ -10,7 +10,6 @@ use wuxia_core::image::Rect;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerStatus {
-    Stopped,
     Starting(String),
     Ready { model: String },
     Failed(String),
@@ -19,7 +18,6 @@ pub enum ServerStatus {
 impl ServerStatus {
     pub fn label(&self) -> String {
         match self {
-            ServerStatus::Stopped => "остановлен".into(),
             ServerStatus::Starting(s) => format!("запуск: {s}"),
             ServerStatus::Ready { model } => format!("готов · {model}"),
             ServerStatus::Failed(e) => format!("ошибка: {e}"),

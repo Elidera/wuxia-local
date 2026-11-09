@@ -644,8 +644,13 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
     });
     ui.add_space(8.0);
     search_set(query);
-    let mut c = shared.cfg.write().unwrap();
+    // A copy is edited, and written back only when something changed: the
+    // settings are not locked while the page is drawn (the game loop and the
+    // overlay read them all the time).
+    let before = shared.cfg();
+    let mut c = before.clone();
     let mut game_changed = false;
+    let mut restart = false; // sent once the new settings are stored
     let mut any = false;
 
     any |= search_card(ui, "Игра", "игра wuthering waves where winds meet другая словарь терминов окно язык текста английский китайский самой заголовок окна название нейросети", |ui| {
@@ -698,7 +703,7 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         dirty |= setting_row(ui, "Цвет текста", "", |ui| ui.color_edit_button_srgb(&mut d.overlay_color).changed());
         dirty |= setting_row(ui, "Цвет имени говорящего", "", |ui| ui.color_edit_button_srgb(&mut d.overlay_name_color).changed());
         dirty |= setting_row(ui, "Обводка букв", "Тёмный контур — текст читается на любом фоне", |ui| toggle(ui, &mut d.overlay_outline).changed());
-        dirty |= setting_row(ui, "Затемнение подложки", "0 — без подложки", |ui| {
+        dirty |= setting_row(ui, "Затемнение подложки", "0 — без подложки. В режиме «Поверх» подложки нет", |ui| {
             ui.add(egui::Slider::new(&mut d.backdrop_opacity, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0} %", v * 100.0))).changed()
         });
         dirty |= setting_row(ui, "Где показывать перевод", "Поверх, над, под субтитрами игры — или в своём окне, которое можно двигать", |ui| {
@@ -720,6 +725,9 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
 
     any |= search_card(ui, "Распознавание субтитров", "цвет текста субтитров тёмный светлый порог яркости бледный текст мусора повышать контраст пёстром фоне частота проверки нагрузка процессор", |ui| {
         let d = &mut c.dialogue;
+        if d.mode == "auto" {
+            hint(ui, "Эти настройки действуют только в режиме «Где искать текст → Только область». Сейчас выбран «Весь экран (авто)».");
+        }
         dirty |= setting_row(ui, "Цвет текста субтитров", "Тёмный или светлый", |ui| segmented(ui, &mut d.text_color, &[("dark", "Тёмный"), ("light", "Светлый")]));
         dirty |= setting_row(ui, "Порог яркости текста", "Ниже — ловит бледный текст, выше — меньше мусора", |ui| {
             ui.add(egui::Slider::new(&mut d.ink_threshold, 120..=250)).changed()
@@ -751,7 +759,7 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         if setting_row(ui, "Использовать видеокарту", "Выключите, если игра тормозит — модель уйдёт на процессор", |ui| toggle(ui, &mut gpu).changed()) {
             l.gpu_layers = if gpu { 99 } else { 0 };
             dirty = true;
-            shared.send(Command::RestartServer);
+            restart = true;
         }
     });
     ui.add_space(8.0);
@@ -785,7 +793,10 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
             shared.send(Command::Open(shared.paths.config()));
         }
     });
-    drop(c);
+    dirty |= store_changes(shared, &before, &c);
+    if restart {
+        shared.send(Command::RestartServer);
+    }
     search_set("");
     if !any {
         hint(ui, "Ничего не найдено. Попробуйте другое слово.");
@@ -794,6 +805,38 @@ fn page_settings(ui: &mut Ui, shared: &Arc<Shared>, query: &mut String) -> bool 
         shared.send(Command::GameChanged);
     }
     dirty
+}
+
+/// Write the sections the settings page changed into the live settings; other
+/// sections may have been changed meanwhile elsewhere (e.g. the found subtitle
+/// area or a downloaded model's path) and are left as they are.
+fn store_changes(shared: &Shared, before: &crate::config::Config, after: &crate::config::Config) -> bool {
+    fn differs<T: serde::Serialize>(a: &T, b: &T) -> bool {
+        toml::to_string(a).ok() != toml::to_string(b).ok()
+    }
+    let (g, d, i, l) = (
+        differs(&before.general, &after.general),
+        differs(&before.dialogue, &after.dialogue),
+        differs(&before.interface, &after.interface),
+        differs(&before.llm, &after.llm),
+    );
+    if !(g || d || i || l) {
+        return false;
+    }
+    let mut live = shared.cfg.write().unwrap();
+    if g {
+        live.general = after.general.clone();
+    }
+    if d {
+        live.dialogue = after.dialogue.clone();
+    }
+    if i {
+        live.interface = after.interface.clone();
+    }
+    if l {
+        live.llm = after.llm.clone();
+    }
+    true
 }
 
 fn page_dictionaries(ui: &mut Ui, shared: &Arc<Shared>, edits: &mut HashMap<String, String>) -> bool {
@@ -924,7 +967,17 @@ fn page_check(ui: &mut Ui, shared: &Arc<Shared>, test_input: &mut String, ocr_vi
     });
     ui.add_space(8.0);
     card(ui, "Сравнить модели", |ui| {
-        hint(ui, "Переводит 25 тестовых реплик всеми моделями и открывает отчёт. Модели, которых нет, будут скачаны.");
+        hint(ui, "Переводит 25 тестовых реплик всеми моделями и открывает отчёт. Модели, которым не хватит памяти этого ПК, пропускаются.");
+        {
+            let cfg = shared.cfg();
+            let missing: Vec<&crate::config::ModelPreset> =
+                cfg.models.iter().filter(|m| m.path.is_empty() || !std::path::Path::new(&m.path).exists()).collect();
+            if !missing.is_empty() {
+                let names: Vec<String> = missing.iter().map(|m| crate::hw::short_name(&m.name)).collect();
+                let gb: f32 = missing.iter().map(|m| m.size_gb).sum();
+                hint(ui, &format!("Сначала будут скачаны: {} (около {:.1} ГБ).", names.join(", "), gb));
+            }
+        }
         match bench {
             Some(b) => {
                 ui.horizontal(|ui| {

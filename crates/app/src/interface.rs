@@ -62,6 +62,9 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let cfg = shared.cfg();
     // The game's own picture when it is in front (no taskbar or other windows).
     let full: PxRect = capture::game_area(&cfg);
+    // «Busy» from the first moment: a second press during the wait below cancels.
+    shared.ui(|u| u.interface = Some(InterfaceView { items: vec![], pending: 1, generation: gen }));
+    let cancelled = || shared.interface_gen.load(Ordering::SeqCst) != gen;
     // Game menus open with an animation (labels slide and grow): a picture taken
     // mid-animation gives boxes smaller than the final text, and the original
     // then shows around the translation. Wait until two pictures 250 ms apart
@@ -69,7 +72,10 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
     let mut frame = match capture::capture_clean(&shared, full) {
         Ok(f) => f,
         Err(e) => {
-            shared.ui(|u| u.notice(format!("Захват экрана: {e}")));
+            shared.ui(|u| {
+                u.interface = None;
+                u.notice(format!("Захват экрана: {e}"))
+            });
             return;
         }
     };
@@ -82,13 +88,19 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
             break;
         }
         tracing::debug!(target: "interface", "экран ещё меняется ({d:.3}), жду");
+        if cancelled() {
+            return;
+        }
+    }
+    if cancelled() {
+        return;
     }
     let up = upscale_for(cfg.interface.upscale, full.h);
-    shared.ui(|u| u.interface = Some(InterfaceView { items: vec![], pending: 1, generation: gen }));
     let t0 = Instant::now();
     let lang = cfg.source_lang();
     let lines = match ocr.recognize(frame.clone(), up, lang).await {
         Ok(l) => l,
+        Err(_) if cancelled() => return,
         Err(e) => {
             shared.ui(|u| {
                 u.interface = None;
@@ -143,6 +155,9 @@ pub async fn toggle(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         it.dst = done.get(&it.src).cloned();
     }
     let n_pending = unique.len();
+    if cancelled() {
+        return; // pressed again while the screen was being read
+    }
     shared.ui(|u| u.interface = Some(InterfaceView { items, pending: n_pending, generation: gen }));
 
     // Auto-hide watcher: the game screen changed (menu closed / scrolled).
