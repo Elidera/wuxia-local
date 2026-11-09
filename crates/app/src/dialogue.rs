@@ -2,15 +2,14 @@
 
 use crate::capture::{self, PxRect};
 use crate::ocr::{self, Ocr};
-use crate::state::{DialogueView, RecentLine, Shared};
-use crate::translate::{Opts, Translator};
+use crate::state::{DialogueView, Shared};
+use crate::translate::Translator;
 use crate::win;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use wuxia_core::detect::{Event, Fingerprint, TextColor, WatchConfig, Watcher};
-use wuxia_core::prompt::TextKind;
 use wuxia_core::{lang, similarity, text};
 
 fn watch_cfg(c: &crate::config::Dialogue) -> WatchConfig {
@@ -40,6 +39,7 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
         if last_cfg_check.elapsed() > Duration::from_millis(500) {
             cfg = shared.cfg();
             last_cfg_check = Instant::now();
+            tr.set_context_lines(cfg.dialogue.context_lines); // «Помнить реплик» applies at once
         }
         if shared.reset_watcher.swap(false, Ordering::SeqCst) {
             watcher = Watcher::new(watch_cfg(&cfg.dialogue));
@@ -175,14 +175,6 @@ pub async fn run(shared: Arc<Shared>, tr: Arc<Translator>, ocr: Ocr) {
 
 async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, seq: u64, full: String, rect: Option<wuxia_core::image::Rect>) {
     let cfg = shared.cfg();
-    let preset = cfg.active_model().clone();
-    let (speaker, body) = if cfg.dialogue.split_speaker {
-        let (s, b) = text::split_speaker(&full);
-        (s.map(|s| tr.canonical_name(s)), b.to_string())
-    } else {
-        (None, full.clone())
-    };
-
     shared.ui(|u| {
         u.dialogue = Some(DialogueView {
             rect,
@@ -194,63 +186,49 @@ async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, seq: u64, full
             from_cache: false,
         })
     });
-
-    let game = cfg.general.game_title.clone();
-    let style = cfg.dialogue.style_hint.clone();
-
-    // Speaker names repeat constantly: translate once, then cache/glossary.
-    let speaker_ru = match &speaker {
-        Some(s) => tr
-            .translate(&preset, &game, "", s, TextKind::Name, Opts { use_cache: true, use_history: false }, |_| {})
-            .await
-            .map(|o| o.text)
-            .ok()
-            .or_else(|| Some(s.clone())),
-        None => None,
-    };
-    if !shared.dialogue_is_current(seq) {
-        return;
-    }
-    shared.ui(|u| {
-        if let Some(d) = u.dialogue.as_mut() {
-            d.speaker = speaker_ru.clone();
-        }
-    });
-
-    let sh = shared.clone();
-    let res = tr
-        .translate_as(&preset, &game, &style, speaker.as_deref(), &body, TextKind::Dialogue, Opts::default(), move |partial| {
-            if sh.dialogue_is_current(seq) {
-                let p = partial.to_string();
-                sh.ui(|u| {
-                    if let Some(d) = u.dialogue.as_mut() {
-                        d.translation = p;
-                    }
-                });
-            }
-        })
+    let (s1, s2) = (shared.clone(), shared.clone());
+    let sp = tr
+        .translate_speech(
+            &cfg,
+            &full,
+            move |speaker_ru| {
+                if s1.dialogue_is_current(seq) {
+                    s1.ui(|u| {
+                        if let Some(d) = u.dialogue.as_mut() {
+                            d.speaker = speaker_ru;
+                        }
+                    });
+                }
+            },
+            move |partial| {
+                if s2.dialogue_is_current(seq) {
+                    let p = partial.to_string();
+                    s2.ui(|u| {
+                        if let Some(d) = u.dialogue.as_mut() {
+                            d.translation = p;
+                        }
+                    });
+                }
+            },
+        )
         .await;
     if !shared.dialogue_is_current(seq) {
         return; // a newer line already replaced this one
     }
     shared.ui(|u| {
-        match &res {
-            Ok(o) => {
-                if let Some(d) = u.dialogue.as_mut() {
+        if let Some(d) = u.dialogue.as_mut() {
+            d.pending = false;
+            match &sp.result {
+                Ok(o) => {
                     d.translation = o.text.clone();
-                    d.pending = false;
                     d.from_cache = o.cached;
                 }
-                u.stats.add_llm(o.ms, o.cached);
-                u.push_recent(RecentLine { src: body.clone(), dst: o.text.clone(), model: preset.id.clone(), ms: o.ms, cached: o.cached });
-            }
-            Err(e) => {
-                if let Some(d) = u.dialogue.as_mut() {
-                    d.pending = false;
-                    d.error = Some(e.to_string());
-                }
-                tracing::warn!("перевод: {e}");
+                Err(e) => d.error = Some(e.to_string()),
             }
         }
+        u.record_speech(&sp, &cfg.active_model().id);
     });
+    if let Err(e) = &sp.result {
+        tracing::warn!("перевод: {e}");
+    }
 }

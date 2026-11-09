@@ -8,20 +8,28 @@
 
 use crate::capture::{self, PxRect};
 use crate::ocr::{self, Ocr};
-use crate::state::{AutoLine, RecentLine, Shared};
-use crate::translate::{Opts, Translator};
+use crate::state::{AutoLine, Shared};
+use crate::translate::Translator;
 use crate::win;
 use std::sync::Arc;
 use std::time::Instant;
 use wuxia_core::image::Rect;
 use wuxia_core::{layout, zone};
-use wuxia_core::prompt::TextKind;
 use wuxia_core::{lang, similarity, text};
 
 struct Active {
     id: u64,
     src: String,
     missed: u32,
+    /// Its translation: stopped when the line leaves the screen, so the model
+    /// does not spend time on text nobody will see.
+    task: tokio::task::AbortHandle,
+}
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        self.task.abort(); // no-op when already finished
+    }
 }
 
 #[derive(Default)]
@@ -33,6 +41,8 @@ pub struct AutoState {
     /// Where real dialogue lines appeared (for finding the subtitle area).
     zone_samples: Vec<Rect>,
     zone_announced: bool,
+    /// The last OCR error shown, so a repeating one is not shown twice a second.
+    ocr_error: Option<String>,
 }
 
 /// Lines on screen at once; more is clutter (and model time).
@@ -92,9 +102,17 @@ impl AutoState {
         let t0 = Instant::now();
         let debug_frame = shared.ui.lock().unwrap().panel_open.then(|| Arc::new(frame.clone()));
         let mut lines = match ocr.recognize(frame, 1, lang).await {
-            Ok(l) => l,
+            Ok(l) => {
+                self.ocr_error = None;
+                l
+            }
             Err(e) => {
-                shared.ui(|u| u.notice(format!("OCR: {e}")));
+                let msg = format!("OCR: {e}");
+                if self.ocr_error.as_deref() != Some(msg.as_str()) {
+                    tracing::warn!("авто: {msg}");
+                    shared.ui(|u| u.notice(msg.clone()));
+                    self.ocr_error = Some(msg);
+                }
                 return;
             }
         };
@@ -150,9 +168,9 @@ impl AutoState {
             self.next_id += 1;
             let id = self.next_id;
             tracing::debug!(target: "dialogue", "авто: {t}");
-            self.active.push(Active { id, src: t.clone(), missed: 0 });
             started.push(AutoLine { id, rect: r, source: t.clone(), speaker: None, translation: String::new(), pending: true });
-            tokio::spawn(translate_line(shared.clone(), tr.clone(), id, t));
+            let task = tokio::spawn(translate_line(shared.clone(), tr.clone(), id, t.clone())).abort_handle();
+            self.active.push(Active { id, src: t, missed: 0, task });
         }
         if learned {
             self.learn_zone(shared);
@@ -216,52 +234,38 @@ pub fn speech_blocks(lines: &[ocr::OcrLine], lang: lang::Lang, tr: &Translator) 
 
 async fn translate_line(shared: Arc<Shared>, tr: Arc<Translator>, id: u64, full: String) {
     let cfg = shared.cfg();
-    let preset = cfg.active_model().clone();
-    let (speaker, body) = if cfg.dialogue.split_speaker {
-        let (s, b) = text::split_speaker(&full);
-        (s.map(|s| tr.canonical_name(s)), b.to_string())
-    } else {
-        (None, full.clone())
-    };
-    let game = cfg.general.game_title.clone();
-    let speaker_ru = match &speaker {
-        Some(s) => tr
-            .translate(&preset, &game, "", s, TextKind::Name, Opts { use_cache: true, use_history: false }, |_| {})
-            .await
-            .map(|o| o.text)
-            .ok()
-            .or_else(|| Some(s.clone())),
-        None => None,
-    };
-    let sh = shared.clone();
-    let res = tr
-        .translate_as(&preset, &game, &cfg.dialogue.style_hint, speaker.as_deref(), &body, TextKind::Dialogue, Opts::default(), move |partial| {
-            let p = partial.to_string();
-            sh.ui(|u| {
-                if let Some(l) = u.auto_lines.iter_mut().find(|l| l.id == id) {
-                    l.translation = p;
-                }
-            });
-        })
+    let (s1, s2) = (shared.clone(), shared.clone());
+    let sp = tr
+        .translate_speech(
+            &cfg,
+            &full,
+            move |speaker_ru| {
+                s1.ui(|u| {
+                    if let Some(l) = u.auto_lines.iter_mut().find(|l| l.id == id) {
+                        l.speaker = speaker_ru;
+                    }
+                })
+            },
+            move |partial| {
+                let p = partial.to_string();
+                s2.ui(|u| {
+                    if let Some(l) = u.auto_lines.iter_mut().find(|l| l.id == id) {
+                        l.translation = p;
+                    }
+                });
+            },
+        )
         .await;
     shared.ui(|u| {
-        let line = u.auto_lines.iter_mut().find(|l| l.id == id);
-        match &res {
-            Ok(o) => {
-                if let Some(l) = line {
-                    l.translation = o.text.clone();
-                    l.speaker = speaker_ru.clone();
-                    l.pending = false;
-                }
-                u.stats.add_llm(o.ms, o.cached);
-                u.push_recent(RecentLine { src: body.clone(), dst: o.text.clone(), model: preset.id.clone(), ms: o.ms, cached: o.cached });
-            }
-            Err(e) => {
-                if let Some(l) = line {
-                    l.pending = false;
-                }
-                tracing::warn!("авто-перевод: {e}");
+        if let Some(l) = u.auto_lines.iter_mut().find(|l| l.id == id) {
+            l.pending = false;
+            if let Ok(o) = &sp.result {
+                l.translation = o.text.clone();
             }
         }
+        u.record_speech(&sp, &cfg.active_model().id);
     });
+    if let Err(e) = &sp.result {
+        tracing::warn!("авто-перевод: {e}");
+    }
 }

@@ -30,10 +30,20 @@ pub struct Translator {
     /// When the last dialogue line was translated: after a long silence the
     /// scene has changed and old lines are no longer useful context.
     last_dialogue: Mutex<Option<Instant>>,
-    /// llama-server runs with one slot: serialize requests, dialogue first.
+    /// llama-server runs with one slot: one request at a time.
     gate: tokio::sync::Mutex<()>,
+    /// Dialogue requests waiting for the slot: screen (F8) requests let them go first.
+    dialogue_waiting: std::sync::atomic::AtomicUsize,
     /// English words: real speech or an OCR fragment?
     words: wuxia_core::words::Words,
+}
+
+/// A subtitle line as both subtitle modes show it.
+pub struct Speech {
+    /// The line without the speaker name.
+    pub body: String,
+    pub speaker_ru: Option<String>,
+    pub result: Result<Output>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +62,25 @@ pub struct Opts {
 impl Default for Opts {
     fn default() -> Self {
         Self { use_cache: true, use_history: true }
+    }
+}
+
+/// Cache tag of a dialogue line whose speaker's gender is known: the Russian
+/// verb endings depend on it, so «I went» is kept separately for him and her.
+fn dialogue_tag(gender: Option<wuxia_core::glossary::Gender>) -> &'static str {
+    match gender {
+        Some(wuxia_core::glossary::Gender::Female) => "d-f",
+        Some(wuxia_core::glossary::Gender::Male) => "d-m",
+        None => "d",
+    }
+}
+
+/// Waits for the model slot; while waiting, counts as a dialogue request
+/// (also when the waiting task is cancelled).
+struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -165,6 +194,7 @@ impl Translator {
             names: Mutex::new(NameBook::new()),
             last_dialogue: Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
+            dialogue_waiting: std::sync::atomic::AtomicUsize::new(0),
             words,
         }
     }
@@ -228,6 +258,35 @@ impl Translator {
         self.glossary.lock().unwrap().len()
     }
 
+    /// «Помнить реплик для контекста» changed: applies at once.
+    pub fn set_context_lines(&self, n: usize) {
+        let mut h = self.history.lock().unwrap();
+        if h.cap() != n {
+            h.set_cap(n);
+        }
+    }
+
+    /// The model slot for a dialogue line: before any waiting screen request.
+    async fn dialogue_slot(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.dialogue_waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _w = Waiting(&self.dialogue_waiting);
+        self.gate.lock().await
+    }
+
+    /// The model slot for screen labels: waits while dialogue lines are queued.
+    async fn screen_slot(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        loop {
+            while self.dialogue_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let g = self.gate.lock().await;
+            if self.dialogue_waiting.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                return g;
+            }
+            drop(g); // a line arrived while we were queued: let it go first
+        }
+    }
+
     pub fn clear_history(&self) {
         self.history.lock().unwrap().clear();
     }
@@ -236,8 +295,18 @@ impl Translator {
     /// similar-line memory) so the next request asks the model again, and note
     /// it in `bad.tsv` (to look through or send to the developer).
     pub fn forget(&self, model_id: &str, src: &str, bad: &str) {
-        let line = self.cache.lock().unwrap().remove(&[model_id, kind_tag(TextKind::Dialogue), src]);
-        append(&self.paths.cache(), &line);
+        let mut lines = String::new();
+        {
+            let mut c = self.cache.lock().unwrap();
+            for tag in [dialogue_tag(None), dialogue_tag(Some(wuxia_core::glossary::Gender::Female)), dialogue_tag(Some(wuxia_core::glossary::Gender::Male))] {
+                if c.get(&[model_id, tag, src]).is_some() {
+                    lines.push_str(&c.remove(&[model_id, tag, src]));
+                }
+            }
+        }
+        if !lines.is_empty() {
+            append(&self.paths.cache(), &lines);
+        }
         self.fuzzy.lock().unwrap().forget(src);
         let (date, time) = crate::win::local_date_time();
         append(&self.paths.data.join("bad.tsv"), &wuxia_core::tsv::line(&[src, bad, &format!("{date} {time}")]));
@@ -308,6 +377,10 @@ impl Translator {
 
     /// Instant answer without the model, if any.
     pub fn lookup(&self, model_id: &str, src: &str, kind: TextKind) -> Option<String> {
+        self.lookup_tagged(model_id, src, kind, kind_tag(kind))
+    }
+
+    fn lookup_tagged(&self, model_id: &str, src: &str, kind: TextKind, tag: &str) -> Option<String> {
         if let Some(c) = self.corrections.lock().unwrap().get(&[src]) {
             return Some(c.to_string());
         }
@@ -317,7 +390,7 @@ impl Translator {
                 return Some(self.fix_ru(&t));
             }
         }
-        let hit = self.cache.lock().unwrap().get(&[model_id, kind_tag(kind), src]).map(str::to_string);
+        let hit = self.cache.lock().unwrap().get(&[model_id, tag, src]).map(str::to_string);
         hit.map(|h| self.fix_ru(&h))
     }
 
@@ -363,17 +436,22 @@ impl Translator {
             }
             *last = Some(Instant::now());
         }
+        let gender = speaker.filter(|_| kind == TextKind::Dialogue).and_then(|s| self.glossary.lock().unwrap().gender_of(s));
+        let tag = if kind == TextKind::Dialogue { dialogue_tag(gender) } else { kind_tag(kind) };
         if opts.use_cache {
-            if let Some(hit) = self.lookup(&preset.id, src, kind) {
+            if let Some(hit) = self.lookup_tagged(&preset.id, src, kind, tag) {
                 if kind == TextKind::Dialogue {
-                    self.fuzzy.lock().unwrap().remember(src, &hit);
+                    if gender.is_none() {
+                        self.fuzzy.lock().unwrap().remember(src, &hit);
+                    }
                     if opts.use_history {
                         self.history.lock().unwrap().push(src, &hit);
                     }
                 }
                 return Ok(Output { text: hit, cached: true, ms: t0.elapsed().as_millis() });
             }
-            if kind == TextKind::Dialogue {
+            // Similar lines are remembered without the speaker: not for a known gender.
+            if kind == TextKind::Dialogue && gender.is_none() {
                 let near = self.fuzzy.lock().unwrap().find(src).map(str::to_string);
                 if let Some(hit) = near {
                     tracing::debug!(target: "translate", "похожая реплика уже переведена: {src}");
@@ -399,7 +477,7 @@ impl Translator {
                 context_pairs: ctx_pairs,
                 game,
                 style_hint,
-                speaker: speaker.filter(|_| kind == TextKind::Dialogue).and_then(|s| g.gender_of(s).map(|gen| (s, gen))),
+                speaker: speaker.filter(|_| kind == TextKind::Dialogue).and_then(|s| gender.map(|gen| (s, gen))),
             };
             if preset.template.trim().is_empty() {
                 prompt::build(PromptStyle::parse(&preset.prompt), &inp)
@@ -408,7 +486,8 @@ impl Translator {
             }
         };
 
-        let _slot = self.gate.lock().await;
+        let _slot = if kind == TextKind::Interface { self.screen_slot().await } else { self.dialogue_slot().await };
+        let mut truncated = false;
         // The model samples (temperature 0.7, as Hy-MT recommends). A dialogue
         // translation that dropped a glossary term gets one more, calmer try
         // (temperature 0.2); a translation that still ignores the glossary is
@@ -416,7 +495,7 @@ impl Translator {
         let mut attempt_preset = preset.clone();
         let mut best: Option<(String, usize)> = None;
         for attempt in 0..2 {
-            let raw = self
+            let reply = self
                 .client
                 .chat(&messages, &attempt_preset, |acc| {
                     if let Ok(p) = prompt::clean_output(acc, src) {
@@ -424,6 +503,8 @@ impl Translator {
                     }
                 })
                 .await?;
+            truncated = reply.truncated;
+            let raw = reply.text;
             let text = match prompt::clean_output(&raw, src) {
                 Ok(t) => t,
                 Err(e) if best.is_some() => {
@@ -458,13 +539,17 @@ impl Translator {
         let ms = t0.elapsed().as_millis();
         tracing::info!(target: "translate", "[{}|{}|{ms} мс] {src} → {text}", preset.id, kind_tag(kind));
         let follows_glossary = missed == 0;
-        if opts.use_cache && follows_glossary {
-            let line = self.cache.lock().unwrap().insert(&[&preset.id, kind_tag(kind), src], &text);
+        if truncated {
+            // Cut by the token limit: shown, never remembered (next time another try).
+            tracing::warn!(target: "translate", "ответ модели обрезан лимитом max_tokens ({}): {src}", preset.max_tokens);
+        }
+        if opts.use_cache && follows_glossary && !truncated {
+            let line = self.cache.lock().unwrap().insert(&[&preset.id, tag, src], &text);
             append(&self.paths.cache(), &line);
         }
         let text = self.fix_ru(&text);
         if kind == TextKind::Dialogue {
-            if follows_glossary {
+            if follows_glossary && !truncated && gender.is_none() {
                 self.fuzzy.lock().unwrap().remember(src, &text);
             }
             if opts.use_history {
@@ -473,6 +558,39 @@ impl Translator {
             self.log_session(speaker, src, &text);
         }
         Ok(Output { text, cached: false, ms })
+    }
+
+    /// One subtitle line, the same way in the auto and the region mode:
+    /// «Name: text» → the name (translated once, then cached; `on_speaker`
+    /// gets it as soon as it is known) and the line itself, streamed to
+    /// `on_partial`.
+    pub async fn translate_speech(
+        &self,
+        cfg: &crate::config::Config,
+        full: &str,
+        on_speaker: impl FnOnce(Option<String>),
+        on_partial: impl FnMut(&str),
+    ) -> Speech {
+        let preset = cfg.active_model().clone();
+        let (speaker, body) = if cfg.dialogue.split_speaker {
+            let (s, b) = wuxia_core::text::split_speaker(full);
+            (s.map(|s| self.canonical_name(s)), b.to_string())
+        } else {
+            (None, full.to_string())
+        };
+        let game = &cfg.general.game_title;
+        let speaker_ru = match &speaker {
+            Some(s) => Some(
+                self.translate(&preset, game, "", s, TextKind::Name, Opts { use_cache: true, use_history: false }, |_| {})
+                    .await
+                    .map(|o| o.text)
+                    .unwrap_or_else(|_| s.clone()),
+            ),
+            None => None,
+        };
+        on_speaker(speaker_ru.clone());
+        let result = self.translate_as(&preset, game, &cfg.dialogue.style_hint, speaker.as_deref(), &body, TextKind::Dialogue, Opts::default(), on_partial).await;
+        Speech { body, speaker_ru, result }
     }
 
     /// Translate many interface labels in one request (see prompt::build_batch).
@@ -502,9 +620,13 @@ impl Translator {
         };
         let mut p = preset.clone();
         p.max_tokens = 48 * items.len() as u32 + 64;
-        let _slot = self.gate.lock().await;
-        let raw = self.client.chat(&messages, &p, |_| {}).await?;
+        let _slot = self.screen_slot().await;
+        let reply = self.client.chat(&messages, &p, |_| {}).await?;
         drop(_slot);
+        if reply.truncated {
+            return Err(anyhow!("пакетный ответ обрезан лимитом длины"));
+        }
+        let raw = reply.text;
         let parts = prompt::parse_batch_indexed(&raw, items.len());
         if parts.iter().any(Option::is_none) {
             tracing::info!(target: "translate", "пакет разобран не полностью, ответ модели: {}", raw.chars().take(600).collect::<String>());

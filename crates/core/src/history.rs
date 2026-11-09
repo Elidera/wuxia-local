@@ -32,6 +32,18 @@ impl History {
         }
     }
 
+    /// Change how many exchanges are kept (the setting changed).
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap;
+        while self.items.len() > self.cap {
+            self.items.pop_front();
+        }
+    }
+
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
     }

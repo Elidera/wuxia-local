@@ -265,6 +265,14 @@ impl UiState {
             self.notices.pop_front();
         }
     }
+    /// A finished subtitle translation: statistics and «Последние реплики».
+    pub fn record_speech(&mut self, sp: &crate::translate::Speech, model_id: &str) {
+        if let Ok(o) = &sp.result {
+            self.stats.add_llm(o.ms, o.cached);
+            self.push_recent(RecentLine { src: sp.body.clone(), dst: o.text.clone(), model: model_id.to_string(), ms: o.ms, cached: o.cached });
+        }
+    }
+
     pub fn push_recent(&mut self, r: RecentLine) {
         if self.recent.front().map_or(false, |x| x.src == r.src) {
             self.recent.pop_front();

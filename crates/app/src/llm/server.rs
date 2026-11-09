@@ -167,6 +167,9 @@ pub fn find_downloaded(models: &Path, hf: &str) -> Option<PathBuf> {
 pub async fn supervise(shared: Arc<Shared>, client: LlmClient, mut rx: UnboundedReceiver<ServerCmd>) {
     let set = |s: ServerStatus| shared.ui(|u| u.server = Some(s));
     let mut failures = 0u32;
+    // Crashes soon after a good start (e.g. video memory runs out mid-game):
+    // each next restart waits longer, and the user is told once, not every time.
+    let mut quick_crashes = 0u32;
     loop {
         let cfg = shared.cfg();
         let preset = cfg.active_model().clone();
@@ -238,6 +241,7 @@ pub async fn supervise(shared: Arc<Shared>, client: LlmClient, mut rx: Unbounded
         failures = 0;
         tracing::info!("llama-server готов: {}", preset.name);
         set(ServerStatus::Ready { model: preset.name.clone() });
+        let up_since = std::time::Instant::now();
 
         // Pin the downloaded file so the next start is offline.
         if downloading && !preset.hf.is_empty() {
@@ -256,13 +260,27 @@ pub async fn supervise(shared: Arc<Shared>, client: LlmClient, mut rx: Unbounded
         tokio::select! {
             status = st.child.wait() => {
                 let msg = format!("llama-server неожиданно завершился: {:?}", status.ok());
-                shared.ui(|u| u.notice(msg.clone()));
+                tracing::error!("{msg}");
+                quick_crashes = if up_since.elapsed() < Duration::from_secs(120) { quick_crashes + 1 } else { 1 };
+                match quick_crashes {
+                    1 => shared.ui(|u| u.notice("Переводчик (модель) неожиданно закрылся — перезапускаю.")),
+                    3 => shared.ui(|u| u.notice(
+                        "Модель перевода падает снова и снова. Скорее всего, не хватает памяти видеокарты: \
+                         выберите модель поменьше в «Модели».",
+                    )),
+                    _ => {}
+                }
                 set(ServerStatus::Failed(msg));
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                let wait = Duration::from_secs((2u64 << quick_crashes.saturating_sub(1).min(5)).min(60));
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    cmd = rx.recv() => if cmd.is_none() { return; },
+                }
             }
             cmd = rx.recv() => {
                 let _ = st.child.kill().await;
                 if cmd.is_none() { return; }
+                quick_crashes = 0; // a new model or settings: a fresh start
             }
         }
     }

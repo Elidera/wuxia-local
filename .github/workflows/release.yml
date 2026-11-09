@@ -69,6 +69,10 @@ jobs:
           $env:WUXIA_BUILD = "$($msk.ToString('dd.MM.yyyy HH:mm')) · $($env:GITHUB_SHA.Substring(0,7))"
           cargo build --locked -p wuxia-local --release
 
+      - name: Test app
+        # Unit tests of the Windows part (e.g. reading the model's stream).
+        run: cargo test --locked -p wuxia-local --release
+
       - name: Download llama.cpp (Vulkan + CPU)
         shell: pwsh
         run: |
