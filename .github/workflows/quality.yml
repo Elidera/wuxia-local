@@ -41,7 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build bench
-        run: cargo build -p wuxia-bench --release
+        run: cargo build --locked -p wuxia-bench --release
 
       - name: Download llama.cpp (Linux CPU)
         run: |

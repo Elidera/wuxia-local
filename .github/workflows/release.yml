@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.1
-      - run: cargo test -p wuxia-core
+      - run: cargo test --locked -p wuxia-core
 
   windows:
     runs-on: windows-latest
@@ -56,10 +56,10 @@ jobs:
           elseif ($sha -ne $pins.MNN_SHA256) { throw "MNN prebuilt changed upstream ($sha, pinned $($pins.MNN_SHA256)). Check it, then update ci/pins.env." }
 
       - name: Test core
-        run: cargo test -p wuxia-core
+        run: cargo test --locked -p wuxia-core
 
       - name: Clippy
-        run: cargo clippy -p wuxia-local --release -- -D clippy::correctness
+        run: cargo clippy --locked -p wuxia-local --release -- -D clippy::correctness
 
       - name: Build
         shell: pwsh
@@ -67,7 +67,7 @@ jobs:
           # Build date (Moscow time) and commit, shown in the panel and the log.
           $msk = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date).ToUniversalTime(), 'Russian Standard Time')
           $env:WUXIA_BUILD = "$($msk.ToString('dd.MM.yyyy HH:mm')) · $($env:GITHUB_SHA.Substring(0,7))"
-          cargo build -p wuxia-local --release
+          cargo build --locked -p wuxia-local --release
 
       - name: Download llama.cpp (Vulkan + CPU)
         shell: pwsh
@@ -154,13 +154,6 @@ jobs:
           $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" "/DDist=$PWD\dist" installer\wuxia-local.iss
           Get-ChildItem installer/Output
-
-      - name: Cargo.lock (exact dependency versions)
-        uses: actions/upload-artifact@v4
-        with:
-          name: cargo-lock
-          path: Cargo.lock
-          retention-days: 3
 
       - uses: actions/upload-artifact@v4
         with:
